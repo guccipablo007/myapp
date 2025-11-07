@@ -184,7 +184,10 @@ export default function MembersDirectory() {
                 <td className="px-3 py-2">
                   <img src={m.avatar_url || '/avatar.png'} className="w-8 h-8 rounded-full border border-zinc-700" />
                 </td>
-                <td className="px-3 py-2 font-medium">{m.full_name}</td>
+                <td className="px-3 py-2 font-medium">
+  <a href={`/members/${m.id}`} className="hover:text-yellow-400">{m.full_name}</a>
+</td>
+
                 <td className="px-3 py-2">{m.email || '—'}</td>
                 <td className="px-3 py-2">{m.role || 'member'}</td>
                 <td className="px-3 py-2">
