@@ -18,21 +18,26 @@ export default function Dashboard() {
 
   async function load() {
     const [a, m, f, meeting] = await Promise.all([
-      sb.from('announcements').select('id', { count: 'exact', head: true }),
+      sb.from('announcements').select('id, title, created_at').order('created_at', { ascending: false }).limit(1),
       sb.from('members').select('id', { count: 'exact', head: true }),
-      sb.from('fines').select('amount,status', { count: 'exact' }),
-      sb.from('meetings').select('*').order('date', { ascending: true }).limit(1)
+      sb.from('fines').select('amount,status'),
+      sb.from('meetings').select('id, title, date').order('date', { ascending: true }).limit(1),
     ]);
+
     setSummary({
-      announcements: a.count ?? 0,
+      announcements: a.data?.length ?? 0,
       members: m.count ?? 0,
       outstanding:
         (f.data ?? [])
           .filter((x: any) => x.status !== 'paid')
           .reduce((t: number, x: any) => t + Number(x.amount ?? 0), 0) || 0,
     });
-    if (a.data && a.data.length) setLatest({ title: a.data[0].title, date: a.data[0].created_at });
-    if (meeting.data && meeting.data.length) setNextMeeting({ date: meeting.data[0].date, title: meeting.data[0].title });
+
+    if (a.data && a.data.length)
+      setLatest({ title: a.data[0].title, date: a.data[0].created_at });
+
+    if (meeting.data && meeting.data.length)
+      setNextMeeting({ date: meeting.data[0].date, title: meeting.data[0].title });
   }
 
   useEffect(() => {
@@ -42,7 +47,9 @@ export default function Dashboard() {
   return (
     <main className="p-6 max-w-6xl mx-auto">
       <h1 className="text-2xl font-bold mb-1">Welcome 👋</h1>
-      <p className="text-sm text-zinc-400 mb-6">Here’s a quick look at what’s happening in the community.</p>
+      <p className="text-sm text-zinc-400 mb-6">
+        Here’s a quick look at what’s happening in the community.
+      </p>
 
       {/* Summary cards */}
       <div className="grid sm:grid-cols-3 gap-4 mb-8">
