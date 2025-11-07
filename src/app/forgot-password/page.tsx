@@ -1,47 +1,57 @@
 'use client';
+
 import { useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
 export default function ForgotPasswordPage() {
   const sb = supabase();
   const [email, setEmail] = useState('');
-  const [msg, setMsg] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<'idle'|'sending'|'sent'|'error'>('idle');
+  const [msg, setMsg] = useState<string>('');
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setErr(null); setMsg(null); setBusy(true);
-
-    const { error } = await sb.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`
-    });
-
-    if (error) setErr(error.message);
-    else setMsg('Check your email for a password reset link.');
-    setBusy(false);
+    setStatus('sending');
+    setMsg('');
+    try {
+      const redirectTo = `${window.location.origin}/reset-password`;
+      const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo });
+      if (error) throw error;
+      setStatus('sent');
+      setMsg('Password reset email sent. Check your inbox.');
+    } catch (err: any) {
+      setStatus('error');
+      setMsg(err.message ?? 'Something went wrong.');
+    }
   }
 
   return (
-    <main className="min-h-dvh grid place-items-center p-4">
-      <form onSubmit={onSubmit} className="w-full max-w-sm border border-zinc-800 rounded-lg p-5 bg-zinc-950/60">
-        <h1 className="text-xl font-semibold mb-3">Forgot password</h1>
+    <main className="p-6 max-w-md mx-auto">
+      <h1 className="text-2xl font-bold mb-2">Forgot Password</h1>
+      <p className="text-sm text-zinc-400 mb-6">Enter your email to receive a reset link.</p>
+
+      <form onSubmit={onSubmit} className="space-y-3">
         <input
           type="email"
-          className="w-full px-3 py-2 rounded border border-zinc-800 bg-zinc-900"
-          placeholder="Your account email"
+          required
           value={email}
-          onChange={(e)=>setEmail(e.target.value)}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@email.com"
+          className="w-full px-3 py-2 rounded border border-zinc-700 bg-zinc-950/60"
         />
-        {err && <p className="text-sm text-red-400 mt-2">{err}</p>}
-        {msg && <p className="text-sm text-emerald-400 mt-2">{msg}</p>}
-        <button disabled={busy} className="mt-3 w-full px-3 py-2 rounded border border-yellow-500/40 bg-yellow-500/20 hover:bg-yellow-500/30">
-          {busy ? 'Sending…' : 'Send reset link'}
+        <button
+          disabled={status === 'sending'}
+          className="w-full px-3 py-2 rounded border border-zinc-700 hover:bg-yellow-500/10"
+        >
+          {status === 'sending' ? 'Sending…' : 'Send Reset Link'}
         </button>
-        <p className="text-sm text-zinc-400 mt-3">
-          Remembered? <a href="/login" className="text-yellow-400">Back to login</a>
-        </p>
       </form>
+
+      {!!msg && (
+        <p className={`mt-4 text-sm ${status === 'error' ? 'text-red-400' : 'text-green-400'}`}>
+          {msg}
+        </p>
+      )}
     </main>
   );
 }
