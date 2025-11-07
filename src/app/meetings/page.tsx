@@ -1,154 +1,110 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
 type Meeting = {
   id: number;
-  date: string;
   title: string;
-  recorded_by?: string | null;
-  minutes?: string | null;
-  attachments?: any[] | null;
+  date: string;          // date (string for simplicity)
+  recorded_by?: string;
+  notes?: string;
+  attachments?: Attachment[];
+};
+
+type Attachment = {
+  id: number;
+  meeting_id: number;
+  file_path: string;
+  uploaded_at: string;
 };
 
 export default function MeetingsPage() {
   const sb = supabase();
+  const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [openId, setOpenId] = useState<number | null>(null);
+  const [role, setRole] = useState<'sysadmin'|'secretary'|'member'|'unknown'>('unknown');
 
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
-  const [list, setList] = useState<Meeting[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  // modal state
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<Meeting | null>(null);
-  const [form, setForm] = useState({ date: '', title: '', minutes: '' });
+  async function loadRole() {
+    // If you already store the role in user_profiles, fetch it here.
+    const session = (await sb.auth.getSession()).data.session;
+    if (!session?.user) return setRole('member');
+    const { data } = await sb.from('user_profiles').select('role').eq('user_id', session.user.id).maybeSingle();
+    setRole((data?.role as any) ?? 'member');
+  }
 
   async function load() {
-    setLoading(true);
-    setErr(null);
-    let q = sb.from('meetings').select('*').order('date', { ascending: false });
-    if (from) q = q.gte('date', from);
-    if (to) q = q.lte('date', to);
-    const { data, error } = await q;
-    if (error) setErr(error.message);
-    setList((data ?? []) as Meeting[]);
-    setLoading(false);
+    const { data: mtgs } = await sb
+      .from('meetings')
+      .select('id, title, date, recorded_by, notes')
+      .order('date', { ascending: false });
+
+    const ids = (mtgs ?? []).map(m => m.id);
+    let atts: Attachment[] = [];
+    if (ids.length) {
+      const { data } = await sb
+        .from('meeting_attachments')
+        .select('*')
+        .in('meeting_id', ids)
+        .order('uploaded_at', { ascending: false });
+      atts = data ?? [];
+    }
+
+    const joined = (mtgs ?? []).map(m => ({
+      ...m,
+      attachments: atts.filter(a => a.meeting_id === m.id)
+    })) as Meeting[];
+
+    setMeetings(joined);
   }
 
   useEffect(() => {
+    loadRole();
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from, to]);
+  }, []);
 
-  function openCreate() {
-    setEditing(null);
-    setForm({ date: '', title: '', minutes: '' });
-    setOpen(true);
-  }
-
-  function openEdit(m: Meeting) {
-    setEditing(m);
-    setForm({
-      date: m.date || '',
-      title: m.title || '',
-      minutes: m.minutes || '',
-    });
-    setOpen(true);
-  }
-
-  async function saveMeeting(e: React.FormEvent) {
-    e.preventDefault();
-    setErr(null);
-    const payload = {
-      date: form.date,
-      title: form.title.trim(),
-      minutes: form.minutes.trim() || null,
-    };
-    if (!payload.date || !payload.title) return setErr('Date and title are required.');
-
-    if (editing) {
-      const { error } = await sb.from('meetings').update(payload).eq('id', editing.id);
-      if (error) return setErr(error.message);
-    } else {
-      const { data: userData } = await sb.auth.getUser();
-      const { error } = await sb.from('meetings').insert({ ...payload, recorded_by: userData.user?.id ?? null });
-      if (error) return setErr(error.message);
-    }
-    setOpen(false);
-    load();
-  }
-
-  async function removeMeeting(id: number) {
-    if (!confirm('Delete this meeting?')) return;
-    const { error } = await sb.from('meetings').delete().eq('id', id);
-    if (error) return setErr(error.message);
-    load();
-  }
+  const openMeeting = useMemo(
+    () => meetings.find(m => m.id === openId) ?? null,
+    [openId, meetings]
+  );
 
   return (
-    <main className="pt-6 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Meetings & Minutes</h1>
-          <p className="text-sm text-zinc-400">Create meetings, record minutes, and track attendance.</p>
-        </div>
-        <button
-          onClick={openCreate}
-          className="px-3 py-2 rounded bg-yellow-500/20 border border-yellow-500/40 hover:bg-yellow-500/30"
-        >
-          + New Meeting
-        </button>
-      </div>
+    <main className="p-6 max-w-6xl mx-auto">
+      <h1 className="text-2xl font-bold mb-1">Meetings & Minutes</h1>
+      <p className="text-sm text-zinc-400 mb-6">
+        View meeting notes and download attachments.
+      </p>
 
-      {/* Controls */}
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <input
-          type="date"
-          className="border border-zinc-800 bg-zinc-900 rounded px-3 py-2"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-        />
-        <span className="text-sm text-zinc-500">to</span>
-        <input
-          type="date"
-          className="border border-zinc-800 bg-zinc-900 rounded px-3 py-2"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-        />
-        <button onClick={() => { setFrom(''); setTo(''); }} className="px-3 py-2 rounded border border-zinc-700">
-          Clear
-        </button>
-      </div>
-
-      {/* Table */}
-      <div className="mt-4 overflow-x-auto border border-zinc-800 rounded-lg">
+      <div className="border border-zinc-800 rounded-lg overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-zinc-950/60 border-b border-zinc-800">
-            <tr className="[&>th]:text-left [&>th]:px-3 [&>th]:py-2">
-              <th>Date</th><th>Title</th><th>Recorded By</th><th>Attachments</th><th>Attendance</th><th>Actions</th>
+          <thead className="bg-zinc-950/60 text-zinc-400">
+            <tr>
+              <th className="text-left p-3">Date</th>
+              <th className="text-left p-3">Title</th>
+              <th className="text-left p-3">Recorded By</th>
+              <th className="text-left p-3">Attachments</th>
+              <th className="text-right p-3">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan={6} className="px-3 py-3">Loading…</td></tr>}
-            {!loading && list.length === 0 && <tr><td colSpan={6} className="px-3 py-3">No meetings</td></tr>}
-
-            {list.map((m) => (
+            {meetings.length === 0 && (
+              <tr>
+                <td colSpan={5} className="p-4 text-zinc-500">No meetings yet.</td>
+              </tr>
+            )}
+            {meetings.map(m => (
               <tr key={m.id} className="border-t border-zinc-800 hover:bg-yellow-500/5">
-                <td className="px-3 py-2">{m.date}</td>
-                <td className="px-3 py-2">{m.title}</td>
-                <td className="px-3 py-2">{m.recorded_by ? 'User' : '—'}</td>
-                <td className="px-3 py-2">{Array.isArray(m.attachments) ? `${m.attachments.length} file(s)` : '0'}</td>
-                <td className="px-3 py-2">
-                  <a className="underline hover:text-yellow-400" href={`/attendance?meeting=${m.id}`}>Open</a>
-                </td>
-                <td className="px-3 py-2">
-                  <div className="flex gap-2">
-                    <button onClick={() => openEdit(m)} className="px-2 py-1 rounded border border-zinc-700 hover:bg-yellow-500/10">Edit</button>
-                    <button onClick={() => removeMeeting(m.id)} className="px-2 py-1 rounded border border-zinc-700 hover:bg-yellow-500/10">Delete</button>
-                  </div>
+                <td className="p-3">{m.date ?? '-'}</td>
+                <td className="p-3">{m.title}</td>
+                <td className="p-3">{m.recorded_by ?? '-'}</td>
+                <td className="p-3">{m.attachments?.length ?? 0}</td>
+                <td className="p-3 text-right">
+                  <button
+                    onClick={() => setOpenId(m.id)}
+                    className="px-3 py-1.5 rounded border border-zinc-700 hover:bg-yellow-500/10"
+                  >
+                    View
+                  </button>
                 </td>
               </tr>
             ))}
@@ -156,50 +112,116 @@ export default function MeetingsPage() {
         </table>
       </div>
 
-      {/* Modal: create/edit */}
-      {open && (
-        <div className="fixed inset-0 bg-black/60 grid place-items-center p-4">
-          <div className="w-full max-w-2xl rounded-lg border border-zinc-800 bg-zinc-950">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
-              <div className="font-semibold">{editing ? 'Edit Meeting' : 'New Meeting'}</div>
-              <button onClick={() => setOpen(false)} className="px-2 py-1 rounded border border-zinc-700">Close</button>
-            </div>
-
-            <form onSubmit={saveMeeting} className="p-4 grid gap-3">
-              <div className="grid md:grid-cols-2 gap-3">
-                <input
-                  type="date"
-                  className="border border-zinc-800 bg-zinc-900 rounded px-3 py-2"
-                  value={form.date}
-                  onChange={(e) => setForm({ ...form, date: e.target.value })}
-                  required
-                />
-                <input
-                  className="border border-zinc-800 bg-zinc-900 rounded px-3 py-2"
-                  placeholder="Meeting title"
-                  value={form.title}
-                  onChange={(e) => setForm({ ...form, title: e.target.value })}
-                  required
-                />
-              </div>
-
-              <textarea
-                className="border border-zinc-800 bg-zinc-900 rounded px-3 py-2 min-h-32"
-                placeholder="Minutes / Notes (optional)"
-                value={form.minutes}
-                onChange={(e) => setForm({ ...form, minutes: e.target.value })}
-              />
-
-              {err && <p className="text-sm text-red-400">Error: {err}</p>}
-
-              <div className="flex justify-end gap-2">
-                <button type="button" onClick={() => setOpen(false)} className="px-3 py-2 rounded border border-zinc-700">Cancel</button>
-                <button className="px-3 py-2 rounded bg-yellow-500/20 border border-yellow-500/40 hover:bg-yellow-500/30">{editing ? 'Save Changes' : 'Create Meeting'}</button>
-              </div>
-            </form>
-          </div>
-        </div>
+      {openMeeting && (
+        <MeetingModal
+          meeting={openMeeting}
+          onClose={() => setOpenId(null)}
+          role={role}
+          refresh={load}
+        />
       )}
     </main>
+  );
+}
+
+function MeetingModal({
+  meeting,
+  onClose,
+  role,
+  refresh
+}: {
+  meeting: Meeting;
+  onClose: () => void;
+  role: 'sysadmin'|'secretary'|'member'|'unknown';
+  refresh: () => Promise<void>;
+}) {
+  const sb = supabase();
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const canUpload = role === 'sysadmin' || role === 'secretary';
+
+  async function handleUpload() {
+    const f = fileRef.current?.files?.[0];
+    if (!f) return;
+    const fileName = `${meeting.id}-${Date.now()}-${f.name}`.replace(/\s+/g, '_');
+    const path = `meetings/${fileName}`;
+
+    // upload to bucket
+    const { error: upErr } = await sb.storage.from('meetings').upload(path, f, {
+      cacheControl: '3600',
+      upsert: false
+    });
+    if (upErr) return alert(upErr.message);
+
+    // record in DB
+    const { error: insErr } = await sb
+      .from('meeting_attachments')
+      .insert({ meeting_id: meeting.id, file_path: path });
+
+    if (insErr) return alert(insErr.message);
+
+    await refresh();
+    alert('File uploaded.');
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+      <div className="w-[min(850px,95vw)] max-h-[85vh] overflow-auto border border-zinc-800 rounded-lg bg-zinc-950">
+        <div className="flex items-center justify-between p-4 border-b border-zinc-800">
+          <div>
+            <h3 className="text-lg font-semibold">{meeting.title}</h3>
+            <div className="text-xs text-zinc-400">{meeting.date} • {meeting.recorded_by ?? '—'}</div>
+          </div>
+          <button onClick={onClose} className="px-3 py-1.5 rounded border border-zinc-700 hover:bg-yellow-500/10">Close</button>
+        </div>
+
+        <div className="p-4 space-y-5">
+          <section>
+            <h4 className="font-semibold mb-2">Minutes / Notes</h4>
+            <div className="text-sm text-zinc-300 whitespace-pre-wrap">
+              {meeting.notes ?? 'No notes added.'}
+            </div>
+          </section>
+
+          <section>
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="font-semibold">Attachments</h4>
+              {canUpload && (
+                <div className="flex items-center gap-2">
+                  <input ref={fileRef} type="file" className="text-xs" />
+                  <button
+                    onClick={handleUpload}
+                    className="px-3 py-1.5 rounded border border-zinc-700 hover:bg-yellow-500/10"
+                  >
+                    Upload
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <ul className="space-y-2 text-sm">
+              {(meeting.attachments ?? []).length === 0 && (
+                <li className="text-zinc-400">No files.</li>
+              )}
+              {(meeting.attachments ?? []).map(a => {
+                // public bucket: direct URL
+                const publicUrl = supabase().storage.from('meetings').getPublicUrl(a.file_path).data.publicUrl;
+                return (
+                  <li key={a.id} className="flex items-center justify-between border border-zinc-800 rounded p-2">
+                    <span className="truncate">{a.file_path.split('/').slice(-1)[0]}</span>
+                    <a
+                      href={publicUrl}
+                      target="_blank"
+                      className="px-3 py-1 rounded border border-zinc-700 hover:bg-yellow-500/10"
+                    >
+                      Download
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        </div>
+      </div>
+    </div>
   );
 }
