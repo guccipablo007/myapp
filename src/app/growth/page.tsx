@@ -1,30 +1,26 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { supabase } from '@/lib/supabase';
-import { formatNumber } from '@/utils/format';
 import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  Legend,
-  PieChart,
-  Pie,
-  Cell,
+  PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend,
 } from 'recharts';
 
-type MonthlyRow = {
-  month: string;            // date string (YYYY-MM-01)
-  joined_count: number;
-  cumulative_total: number;
-};
+// ---- Supabase client compatibility wrapper ----
+// Works whether your lib exports a client *object* or a client *factory function*.
+import { supabase as supabaseMaybe } from '@/lib/supabase'; // <-- keep this path as in your project
+function sb() {
+  // @ts-expect-error - support both shapes
+  const s = typeof supabaseMaybe === 'function' ? supabaseMaybe() : supabaseMaybe;
+  return s;
+}
 
-type StatusRow = { status: 'active' | 'inactive'; count: number };
-type RoleRow = { role: string; count: number };
+// Optional formatting helpers you already have:
+import { formatNumber, fmtCFA as formatCurrency } from '@/lib/format';
+
+// ---- Types that match the SQL views we created earlier ----
+type StatusRow = { status: 'active' | 'inactive'; total: number };
+type RoleRow = { role: 'sysadmin' | 'secretary' | 'member'; total: number };
 type TenureRow = {
   avg_days: number;
   first_joined: string | null;
@@ -32,232 +28,192 @@ type TenureRow = {
   total_members: number;
 };
 
-const COLORS = {
-  joined: '#22c55e',          // green
-  cumulative: '#60a5fa',      // blue
-  active: '#10b981',          // emerald
-  inactive: '#f59e0b',        // amber
-  roles: ['#60a5fa', '#22c55e', '#f59e0b', '#f43f5e', '#a78bfa', '#34d399'],
-};
-
-const card =
-  'rounded-xl border border-zinc-800 bg-zinc-950/50 p-4 md:p-5 shadow-sm';
-
-const title = 'text-sm text-zinc-400';
-const value = 'text-2xl md:text-3xl font-semibold';
-
-function monthLabel(d: string) {
-  try {
-    return new Date(d).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
-  } catch {
-    return d;
-  }
-}
+const COLORS = ['#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d'];
 
 export default function GrowthPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  const [monthly, setMonthly] = useState<MonthlyRow[]>([]);
-  const [statusTotals, setStatusTotals] = useState<StatusRow[]>([]);
-  const [roleTotals, setRoleTotals] = useState<RoleRow[]>([]);
+  const [statusData, setStatusData] = useState<StatusRow[]>([]);
+  const [roleData, setRoleData] = useState<RoleRow[]>([]);
   const [tenure, setTenure] = useState<TenureRow | null>(null);
 
   useEffect(() => {
+    let alive = true;
     (async () => {
       setLoading(true);
       setErr(null);
-      const sb = supabase();
+      try {
+        // v_member_status_totals:  status, total
+        const s1 = await sb().from('v_member_status_totals').select('*');
 
-      const [mRes, sRes, rRes, tRes] = await Promise.all([
-        sb.from('v_member_monthly_stats').select('*').order('month', { ascending: true }),
-        sb.from('v_member_status_totals').select('*'),
-        sb.from('v_member_role_totals').select('*').order('role', { ascending: true }),
-        sb.from('v_member_tenure').select('*').single(),
-      ]);
+        // v_member_role_totals:    role, total
+        const s2 = await sb().from('v_member_role_totals').select('*');
 
-      if (mRes.error) return setErr(mRes.error.message), setLoading(false);
-      if (sRes.error) return setErr(sRes.error.message), setLoading(false);
-      if (rRes.error) return setErr(rRes.error.message), setLoading(false);
-      if (tRes.error) return setErr(tRes.error.message), setLoading(false);
+        // v_member_tenure: avg_days, first_joined, last_joined, total_members
+        const s3 = await sb().from('v_member_tenure').select('*').maybeSingle();
 
-      setMonthly((mRes.data || []) as MonthlyRow[]);
-      setStatusTotals((sRes.data || []) as StatusRow[]);
-      setRoleTotals((rRes.data || []) as RoleRow[]);
-      setTenure((tRes.data || null) as TenureRow | null);
-      setLoading(false);
+        if (s1.error) throw s1.error;
+        if (s2.error) throw s2.error;
+        if (s3.error) throw s3.error;
+
+        if (!alive) return;
+        setStatusData((s1.data || []) as StatusRow[]);
+        setRoleData((s2.data || []) as RoleRow[]);
+        setTenure((s3.data || null) as TenureRow | null);
+      } catch (e: any) {
+        if (!alive) return;
+        setErr(e?.message || 'Failed to load growth data');
+      } finally {
+        if (alive) setLoading(false);
+      }
     })();
+    return () => { alive = false; };
   }, []);
 
-  const activeCount = useMemo(
-    () => statusTotals.find(x => x.status === 'active')?.count ?? 0,
-    [statusTotals],
-  );
-  const inactiveCount = useMemo(
-    () => statusTotals.find(x => x.status === 'inactive')?.count ?? 0,
-    [statusTotals],
+  const statusPie = useMemo(
+    () => statusData.map((r) => ({ name: r.status, value: r.total })),
+    [statusData]
   );
 
-  const latestMonth = monthly.at(-1);
-  const totalMembers = tenure?.total_members ?? latestMonth?.cumulative_total ?? 0;
+  const roleBars = useMemo(
+    () => roleData.map((r) => ({ name: r.role, count: r.total })),
+    [roleData]
+  );
+
+  const avgMonths = useMemo(() => {
+    if (!tenure?.avg_days) return 0;
+    return Math.round((tenure.avg_days / 30) * 10) / 10; // 1 dec place
+  }, [tenure]);
 
   return (
-    <div className="space-y-6 md:space-y-8">
-      <div className="flex items-baseline justify-between gap-2">
-        <h1 className="text-xl md:text-2xl font-semibold">Community Growth</h1>
-        <p className="text-zinc-400 text-sm">Last 24 months</p>
+    <div className="p-6 space-y-6">
+      <h1 className="text-2xl font-semibold">Growth & Member Analytics</h1>
+
+      {/* Top KPIs */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Kpi
+          label="Total Members"
+          value={formatNumber(tenure?.total_members ?? 0)}
+          hint={
+            tenure?.first_joined
+              ? `Since ${new Date(tenure.first_joined).toLocaleDateString()}`
+              : '—'
+          }
+        />
+        <Kpi
+          label="Average Tenure"
+          value={`${avgMonths} mo`}
+          hint={
+            tenure?.last_joined
+              ? `Latest join: ${new Date(tenure.last_joined).toLocaleDateString()}`
+              : '—'
+          }
+        />
+        <Kpi
+          label="Active vs Inactive"
+          value={`${formatNumber(
+            statusData.find((s) => s.status === 'active')?.total || 0
+          )} / ${formatNumber(
+            statusData.find((s) => s.status === 'inactive')?.total || 0
+          )}`}
+          hint="Active / Inactive members"
+        />
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-5">
-        <div className={card}>
-          <div className={title}>Total Members</div>
-          <div className={value}>{formatNumber(totalMembers)}</div>
-          <div className="text-xs text-zinc-500 mt-1">
-            Cumulative up to this month
-          </div>
-        </div>
-
-        <div className={card}>
-          <div className={title}>New This Month</div>
-          <div className={value}>{formatNumber(latestMonth?.joined_count ?? 0)}</div>
-          <div className="text-xs text-zinc-500 mt-1">
-            From <span className="text-zinc-300">{monthLabel(latestMonth?.month ?? '')}</span>
-          </div>
-        </div>
-
-        <div className={card}>
-          <div className={title}>Active</div>
-          <div className={`${value} text-emerald-400`}>{formatNumber(activeCount)}</div>
-          <div className="text-xs text-zinc-500 mt-1">
-            Inactive: {formatNumber(inactiveCount)}
-          </div>
-        </div>
-
-        <div className={card}>
-          <div className={title}>Avg. Tenure (days)</div>
-          <div className={value}>{formatNumber(Number(tenure?.avg_days ?? 0))}</div>
-          <div className="text-xs text-zinc-500 mt-1">
-            Since {tenure?.first_joined ? monthLabel(tenure.first_joined) : '—'}
-          </div>
-        </div>
-      </div>
-
-      {/* Charts Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-5">
-        {/* Line Chart */}
-        <div className={`lg:col-span-2 ${card}`}>
-          <div className="flex items-center justify-between mb-3">
-            <div className="font-medium">Monthly Joins & Cumulative Members</div>
-          </div>
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart
-                data={(monthly || []).map(m => ({
-                  ...m,
-                  label: monthLabel(m.month),
-                }))}
-                margin={{ top: 8, right: 16, left: 0, bottom: 8 }}
-              >
-                <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
-                <XAxis dataKey="label" tick={{ fill: '#a1a1aa', fontSize: 12 }} />
-                <YAxis
-                  tick={{ fill: '#a1a1aa', fontSize: 12 }}
-                  tickFormatter={(v) => formatNumber(v)}
-                />
-                <Tooltip
-                  contentStyle={{ background: '#09090b', border: '1px solid #27272a' }}
-                  formatter={(val: any) => formatNumber(val as number)}
-                  labelClassName="text-white"
-                />
-                <Legend />
-                <Line
-                  type="monotone"
-                  dataKey="joined_count"
-                  stroke={COLORS.joined}
-                  strokeWidth={2}
-                  dot={false}
-                  name="Joined"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="cumulative_total"
-                  stroke={COLORS.cumulative}
-                  strokeWidth={2}
-                  dot={false}
-                  name="Cumulative"
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Status Pie */}
-        <div className={card}>
-          <div className="font-medium mb-3">Status Mix</div>
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
+      {/* Charts */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Card title="Member Status Composition">
+          <ChartBox loading={loading} error={err}>
+            <ResponsiveContainer width="100%" height={280}>
               <PieChart>
                 <Pie
-                  data={[
-                    { name: 'Active', value: activeCount },
-                    { name: 'Inactive', value: inactiveCount },
-                  ]}
+                  data={statusPie}
                   dataKey="value"
                   nameKey="name"
-                  innerRadius={50}
-                  outerRadius={80}
-                  paddingAngle={2}
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={90}
+                  label
                 >
-                  <Cell fill={COLORS.active} />
-                  <Cell fill={COLORS.inactive} />
+                  {statusPie.map((_, i) => (
+                    <Cell key={`s-${i}`} fill={COLORS[i % COLORS.length]} />
+                  ))}
                 </Pie>
-                <Tooltip
-                  contentStyle={{ background: '#09090b', border: '1px solid #27272a' }}
-                  formatter={(val: any) => formatNumber(val as number)}
-                />
+                <Tooltip />
                 <Legend />
               </PieChart>
             </ResponsiveContainer>
-          </div>
-        </div>
+          </ChartBox>
+        </Card>
+
+        <Card title="Roles Breakdown">
+          <ChartBox loading={loading} error={err}>
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart data={roleBars} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="name" />
+                <YAxis allowDecimals={false} />
+                <Tooltip />
+                <Legend />
+                <Bar dataKey="count" name="Members">
+                  {roleBars.map((_, i) => (
+                    <Cell key={`r-${i}`} fill={COLORS[i % COLORS.length]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartBox>
+        </Card>
       </div>
 
-      {/* Roles Pie */}
-      <div className={card}>
-        <div className="font-medium mb-3">Roles Distribution</div>
-        <div className="h-80">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={roleTotals}
-                dataKey="count"
-                nameKey="role"
-                innerRadius={60}
-                outerRadius={100}
-                paddingAngle={2}
-              >
-                {roleTotals.map((_, i) => (
-                  <Cell key={i} fill={COLORS.roles[i % COLORS.roles.length]} />
-                ))}
-              </Pie>
-              <Tooltip
-                contentStyle={{ background: '#09090b', border: '1px solid #27272a' }}
-                formatter={(val: any) => formatNumber(val as number)}
-              />
-              <Legend />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* Errors & Loading */}
-      {loading && (
-        <div className="text-sm text-zinc-400">Loading growth data…</div>
-      )}
-      {err && (
-        <div className="text-sm text-rose-400">Error: {err}</div>
-      )}
+      {/* Footnote */}
+      <p className="text-xs text-neutral-400">
+        Data source: <code>v_member_status_totals</code>, <code>v_member_role_totals</code>,{' '}
+        <code>v_member_tenure</code>.
+      </p>
     </div>
   );
+}
+
+/* ---------- Small UI helpers (no external deps) ---------- */
+function Kpi({ label, value, hint }: { label: string; value: string | number; hint?: string }) {
+  return (
+    <div className="rounded-2xl border border-neutral-800 p-5 bg-neutral-900/40">
+      <div className="text-neutral-400 text-sm">{label}</div>
+      <div className="text-3xl font-semibold mt-1">{value}</div>
+      {hint ? <div className="text-neutral-500 text-xs mt-1">{hint}</div> : null}
+    </div>
+  );
+}
+
+function Card({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-neutral-800 p-5 bg-neutral-900/40">
+      <div className="text-neutral-200 font-medium mb-3">{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function ChartBox({
+  loading,
+  error,
+  children,
+}: {
+  loading: boolean;
+  error: string | null;
+  children: React.ReactNode;
+}) {
+  if (loading) {
+    return <div className="h-[280px] grid place-items-center text-neutral-500">Loading…</div>;
+  }
+  if (error) {
+    return (
+      <div className="h-[280px] grid place-items-center text-red-400 text-sm">
+        Error: {error}
+      </div>
+    );
+  }
+  return <div className="h-[280px]">{children}</div>;
 }
