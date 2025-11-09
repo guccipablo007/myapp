@@ -92,7 +92,11 @@ export default function ProjectsPage() {
 
   async function saveEdit() {
     if (!editingId) return;
-    const optimistic = rows.map(r => (r.id === editingId ? { ...(r as Project), ...(draft as Project) } : r));
+
+    // Keep array typed as Project[]
+    const optimistic: Project[] = rows.map(r =>
+      r.id === editingId ? ({ ...(r as Project), ...(draft as Project) } as Project) : r
+    );
     setRows(optimistic);
     setEditingId(null);
 
@@ -107,12 +111,19 @@ export default function ProjectsPage() {
   }
 
   async function toggleToCompleted(p: Project) {
-    const updated = rows.map(r => (r.id === p.id ? { ...r, status: r.status === 'completed' ? 'ongoing' : 'completed' } : r));
+    // Keep status narrowed to union type
+    const updated: Project[] = rows.map(r =>
+      r.id === p.id
+        ? { ...r, status: (r.status === 'completed' ? 'ongoing' : 'completed') as Project['status'] }
+        : r
+    );
     setRows(updated);
+
     const { error } = await sb
       .from('projects')
       .update({ status: p.status === 'completed' ? 'ongoing' : 'completed' })
       .eq('id', p.id);
+
     if (error) {
       setErr(error.message);
       load();
@@ -121,7 +132,7 @@ export default function ProjectsPage() {
 
   async function remove(p: Project) {
     if (!confirm(`Delete "${p.name}"?`)) return;
-    const keep = rows.filter(r => r.id !== p.id);
+    const keep: Project[] = rows.filter(r => r.id !== p.id);
     setRows(keep);
     const { error } = await sb.from('projects').delete().eq('id', p.id);
     if (error) {
@@ -135,7 +146,7 @@ export default function ProjectsPage() {
     const payload = {
       name: newP.name?.trim()!,
       budget: newP.budget ?? null,
-      status: (newP.status as Project['status']) ?? 'ongoing',
+      status: ((newP.status as Project['status']) ?? 'ongoing') as Project['status'],
       start_date: newP.start_date || null,
       end_date: newP.end_date || null,
       description: newP.description || null,
@@ -208,9 +219,7 @@ export default function ProjectsPage() {
         <TotalCard label="Total Budget (CFA)" value={totals.totalBudget.toLocaleString()} />
         <TotalCard
           label="Avg Budget (CFA)"
-          value={
-            totals.count ? Math.round(totals.totalBudget / totals.count).toLocaleString() : '0'
-          }
+          value={totals.count ? Math.round(totals.totalBudget / totals.count).toLocaleString() : '0'}
         />
       </div>
 
