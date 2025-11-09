@@ -8,11 +8,10 @@ import {
 
 // ---- Supabase client compatibility wrapper ----
 // Works whether your lib exports a client *object* or a client *factory function*.
-import { supabase as supabaseMaybe } from '@/lib/supabase'; // <-- keep this path as in your project
+import { supabase as supabaseMaybe } from '@/lib/supabase';
 function sb() {
-  // @ts-expect-error - support both shapes
-  const s = typeof supabaseMaybe === 'function' ? supabaseMaybe() : supabaseMaybe;
-  return s;
+  const maybe: any = supabaseMaybe as any;
+  return typeof maybe === 'function' ? maybe() : maybe;
 }
 
 // Optional formatting helpers you already have:
