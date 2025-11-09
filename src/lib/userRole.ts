@@ -1,26 +1,51 @@
 // src/lib/userRole.ts
-import { supabase as supabaseFactory } from "@/lib/supabase";
+export type AppRole = 'sysadmin' | 'secretary' | 'member' | 'guest';
 
-export type AppRole = "sysadmin" | "secretary" | "member" | "guest";
+import { supabase as supabaseMaybe } from '@/lib/supabase';
+
+function sb() {
+  const maybe: any = supabaseMaybe as any;
+  return typeof maybe === 'function' ? maybe() : maybe;
+}
 
 export async function getCurrentUserRole(): Promise<AppRole> {
-  // ✅ instantiate the client from the factory
-  const sb = supabaseFactory();
+  const s: any = sb();
 
-  const { data: auth } = await sb.auth.getUser();
-  if (!auth?.user) return "guest";
+  // 1) Prefer Postgres RPC if you have a function `public.current_role()`
+  try {
+    if (typeof s.rpc === 'function') {
+      const { data, error } = await s.rpc('current_role');
+      if (!error && typeof data === 'string') {
+        const role = data.toLowerCase();
+        if (role === 'sysadmin' || role === 'secretary' || role === 'member') return role as AppRole;
+        return 'guest';
+      }
+    }
+  } catch (_) {
+    // fall through
+  }
 
-  // user_profiles has: user_id (uuid), role (text)
-  const { data, error } = await sb
-    .from("user_profiles")
-    .select("role")
-    .eq("user_id", auth.user.id)
-    .maybeSingle();
+  // 2) Fallback: read from user_profiles table using the authenticated user
+  try {
+    if (s.auth?.getUser) {
+      const { data: authData } = await s.auth.getUser();
+      const uid = authData?.user?.id;
+      if (uid) {
+        const { data, error } = await s
+          .from('user_profiles')
+          .select('role')
+          .eq('user_id', uid)
+          .limit(1)
+          .maybeSingle();
+        if (!error && data?.role) {
+          const role = String(data.role).toLowerCase();
+          if (role === 'sysadmin' || role === 'secretary' || role === 'member') return role as AppRole;
+        }
+      }
+    }
+  } catch (_) {
+    // fall through
+  }
 
-  if (error || !data?.role) return "member";
-  const role = String(data.role).toLowerCase();
-
-  if (role === "sysadmin" || role === "secretary") return role as AppRole;
-  if (role === "member") return "member";
-  return "guest";
+  return 'guest';
 }

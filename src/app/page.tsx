@@ -4,6 +4,7 @@ import KpiCard from "@/components/KpiCard";
 import AdminInsights from "@/components/AdminInsights";
 import { formatNumber, formatCurrency } from "@/lib/format";
 import { supabase as supabaseMaybe } from "@/lib/supabase";
+import { getCurrentUserRole } from "@/lib/userRole";
 
 /** Support both shapes: exported client or factory function */
 function sb() {
@@ -96,8 +97,8 @@ async function getDashboardCounts(): Promise<Counts> {
 }
 
 export default async function DashboardPage() {
-  const { announcements, activeMembers, outstandingDues, latestAnnouncement, nextMeeting } =
-    await getDashboardCounts();
+  const [{ announcements, activeMembers, outstandingDues, latestAnnouncement, nextMeeting }, role] =
+    await Promise.all([getDashboardCounts(), getCurrentUserRole()]);
 
   const briefing = [
     `${announcements} announcement${announcements === 1 ? "" : "s"} total`,
@@ -204,8 +205,8 @@ export default async function DashboardPage() {
         )}
       </div>
 
-      {/* Admin Insights Section */}
-      <AdminInsights />
+      {/* Admin Insights Section — gated by role */}
+      {(role === 'sysadmin' || role === 'secretary') ? <AdminInsights /> : null}
 
       {/* Data sources note */}
       <p className="text-[11px] text-white/40">
