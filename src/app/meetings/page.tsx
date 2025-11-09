@@ -4,8 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase as supabaseFactory } from '@/lib/supabase';
 import MeetingModal from './MeetingModal';
 
-// Toggle signed/public URLs for attachments in the modal
-export const USE_SIGNED_URLS = true;
+// ⬇️ Make this a local const (NOT exported)
+const USE_SIGNED_URLS = true;
 
 type MeetingRow = {
   id: number;
