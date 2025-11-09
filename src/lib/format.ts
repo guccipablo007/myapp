@@ -1,28 +1,38 @@
 // src/lib/format.ts
 
 /**
- * Format a number as currency.
- * Defaults to Central African CFA (XAF) used in Cameroon.
+ * Format a number as Central African Francs (FCFA) with no decimals.
+ * Falls back gracefully if input is null/undefined/NaN.
  */
-export function formatCurrency(
-  value: number | null | undefined,
-  currency: string = 'XAF'
-): string {
-  const n = Number(value ?? 0);
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency,
-      maximumFractionDigits: 0,
-    }).format(n);
-  } catch {
-    // Fallback if Intl/currency not available
-    return `${n.toLocaleString()} ${currency}`;
-  }
+export function formatCurrency(n: number | null | undefined): string {
+  const value = Number(n || 0);
+  // Locale + currency picked to render "FCFA" style
+  const s = new Intl.NumberFormat('fr-CM', {
+    style: 'currency',
+    currency: 'XAF',
+    maximumFractionDigits: 0,
+  }).format(value);
+
+  // Some environments put currency after number or with non-breaking spaces.
+  // Normalize to "FCFA 12 345" (FCFA first).
+  const normalized = s
+    .replace(/\u00A0/g, ' ')        // NBSP -> space
+    .replace(/FCFA\s?/i, '')        // remove existing FCFA if trailing
+    .trim();
+
+  return `FCFA ${normalized}`;
 }
 
-/** Small helpers if you need them later */
-export function formatNumber(value: number | null | undefined): string {
-  const n = Number(value ?? 0);
-  return new Intl.NumberFormat().format(n);
+/**
+ * Simple number formatter for counts (no decimals).
+ */
+export function formatNumber(n: number | null | undefined): string {
+  const value = Number(n || 0);
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
 }
+
+/**
+ * Backward-compat alias so legacy imports keep working:
+ *   import { fmtCFA } from '@/lib/format'
+ */
+export const fmtCFA = formatCurrency;
