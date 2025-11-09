@@ -2,6 +2,7 @@
 import Link from "next/link";
 import KpiCard from "@/components/KpiCard";
 import AdminInsights from "@/components/AdminInsights";
+import GlobalSearch from "@/components/GlobalSearch";
 import { formatNumber, formatCurrency } from "@/lib/format";
 import { supabase as supabaseMaybe } from "@/lib/supabase";
 import { getCurrentUserRole } from "@/lib/userRole";
@@ -108,9 +109,14 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">Welcome, Collins! 👋</h1>
+      {/* Header with Global Search + quick links */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-2xl font-semibold">Welcome, Collins! 👋</h1>
+          <div className="w-full max-w-md">
+            <GlobalSearch />
+          </div>
+        </div>
         <div className="flex gap-2">
           <Link href="/growth" className="text-sm rounded px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10">
             Growth
@@ -206,7 +212,7 @@ export default async function DashboardPage() {
       </div>
 
       {/* Admin Insights Section — gated by role */}
-      {(role === 'sysadmin' || role === 'secretary') ? <AdminInsights /> : null}
+      {(role === "sysadmin" || role === "secretary") ? <AdminInsights /> : null}
 
       {/* Data sources note */}
       <p className="text-[11px] text-white/40">
