@@ -1,34 +1,40 @@
 'use client';
+
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
 type Project = {
   id: number;
   name: string;
-  description?: string | null;
   budget?: number | null;
-  status: 'active' | 'completed';
+  status: 'ongoing' | 'completed' | 'on-hold';
   start_date?: string | null;
   end_date?: string | null;
+  description?: string | null;
 };
+
+const STATUS_OPTIONS: Array<Project['status']> = ['ongoing', 'completed', 'on-hold'];
 
 export default function ProjectsPage() {
   const sb = supabase();
-  const [tab, setTab] = useState<'active' | 'completed'>('active');
-  const [projects, setProjects] = useState<Project[]>([]);
+  const [tab, setTab] = useState<'ongoing' | 'completed'>('ongoing');
+
+  const [rows, setRows] = useState<Project[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // modal state
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<Project | null>(null);
-  const [form, setForm] = useState({
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [draft, setDraft] = useState<Partial<Project>>({});
+
+  // Create modal
+  const [showCreate, setShowCreate] = useState(false);
+  const [newP, setNewP] = useState<Partial<Project>>({
     name: '',
-    description: '',
-    budget: '',
-    status: 'active',
+    budget: undefined,
+    status: 'ongoing',
     start_date: '',
     end_date: '',
+    description: '',
   });
 
   async function load() {
@@ -37,81 +43,89 @@ export default function ProjectsPage() {
     const { data, error } = await sb
       .from('projects')
       .select('*')
-      .eq('status', tab)
       .order('start_date', { ascending: false });
-    if (error) setErr(error.message);
-    setProjects((data ?? []) as Project[]);
+
     setLoading(false);
+    if (error) return setErr(error.message);
+    setRows((data ?? []) as Project[]);
   }
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
+  }, []);
 
-  function openCreate() {
-    setEditing(null);
-    setForm({
-      name: '',
-      description: '',
-      budget: '',
-      status: 'active',
-      start_date: '',
-      end_date: '',
-    });
-    setOpen(true);
+  const filtered = useMemo(
+    () => rows.filter(r => (tab === 'ongoing' ? r.status !== 'completed' : r.status === 'completed')),
+    [rows, tab]
+  );
+
+  function beginEdit(p: Project) {
+    setEditingId(p.id);
+    setDraft({ ...p });
   }
 
-  function openEdit(p: Project) {
-    setEditing(p);
-    setForm({
-      name: p.name || '',
-      description: p.description || '',
-      budget: p.budget != null ? String(p.budget) : '',
-      status: p.status || 'active',
-      start_date: p.start_date || '',
-      end_date: p.end_date || '',
-    });
-    setOpen(true);
+  function cancelEdit() {
+    setEditingId(null);
+    setDraft({});
   }
 
-  async function saveProject(e: React.FormEvent) {
-    e.preventDefault();
-    setErr(null);
+  async function saveEdit() {
+    if (!editingId) return;
+    const optimistic = rows.map(r => (r.id === editingId ? { ...(r as Project), ...(draft as Project) } : r));
+    setRows(optimistic);
+    setEditingId(null);
 
+    const payload = { ...draft };
+    // Avoid sending undefined keys that can violate constraints
+    Object.keys(payload).forEach(k => (payload as any)[k] === undefined && delete (payload as any)[k]);
+
+    const { error } = await sb.from('projects').update(payload).eq('id', editingId);
+    if (error) {
+      setErr(error.message);
+      load(); // revert
+    }
+  }
+
+  async function toggleToCompleted(p: Project) {
+    const updated = rows.map(r => (r.id === p.id ? { ...r, status: r.status === 'completed' ? 'ongoing' : 'completed' } : r));
+    setRows(updated);
+    const { error } = await sb.from('projects').update({ status: p.status === 'completed' ? 'ongoing' : 'completed' }).eq('id', p.id);
+    if (error) {
+      setErr(error.message);
+      load();
+    }
+  }
+
+  async function remove(p: Project) {
+    if (!confirm(`Delete "${p.name}"?`)) return;
+    const keep = rows.filter(r => r.id !== p.id);
+    setRows(keep);
+    const { error } = await sb.from('projects').delete().eq('id', p.id);
+    if (error) {
+      setErr(error.message);
+      load();
+    }
+  }
+
+  async function create() {
+    if (!newP.name?.trim()) return alert('Name is required.');
     const payload = {
-      name: form.name.trim(),
-      description: form.description.trim() || null,
-      budget: form.budget ? Number(form.budget) : null,
-      status: form.status as 'active' | 'completed',
-      start_date: form.start_date || null,
-      end_date: form.end_date || null,
+      name: newP.name?.trim()!,
+      budget: newP.budget ?? null,
+      status: (newP.status as Project['status']) ?? 'ongoing',
+      start_date: newP.start_date || null,
+      end_date: newP.end_date || null,
+      description: newP.description || null,
     };
 
-    if (!payload.name) return setErr('Project name is required.');
-
-    if (editing) {
-      const { error } = await sb.from('projects').update(payload).eq('id', editing.id);
-      if (error) return setErr(error.message);
-    } else {
-      const { error } = await sb.from('projects').insert(payload);
-      if (error) return setErr(error.message);
-    }
-    setOpen(false);
-    load();
-  }
-
-  async function removeProject(id: number) {
-    if (!confirm('Delete this project?')) return;
-    const { error } = await sb.from('projects').delete().eq('id', id);
+    const { data, error } = await sb.from('projects').insert(payload).select('*').maybeSingle();
     if (error) return setErr(error.message);
-    load();
-  }
+    if (data) setRows([data as Project, ...rows]);
 
-  const totals = useMemo(() => {
-    const sum = (projects ?? []).reduce((s, p) => s + Number(p.budget || 0), 0);
-    return { count: projects.length, budget: sum };
-  }, [projects]);
+    setShowCreate(false);
+    setNewP({ name: '', status: 'ongoing' });
+  }
 
   return (
     <main className="pt-6 max-w-6xl mx-auto">
@@ -121,8 +135,8 @@ export default function ProjectsPage() {
           <p className="text-sm text-zinc-400">Track budgets and timelines for ongoing and completed projects.</p>
         </div>
         <button
-          onClick={openCreate}
-          className="px-3 py-2 rounded bg-yellow-500/20 border border-yellow-500/40 hover:bg-yellow-500/30"
+          onClick={() => setShowCreate(true)}
+          className="px-3 py-2 rounded border border-zinc-700 hover:bg-yellow-500/10 hover:text-yellow-400"
         >
           + Create New Project
         </button>
@@ -130,7 +144,7 @@ export default function ProjectsPage() {
 
       {/* Tabs */}
       <div className="mt-4 border-b border-zinc-800 flex gap-6 text-sm">
-        {(['active', 'completed'] as const).map((t) => (
+        {(['ongoing', 'completed'] as const).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -138,145 +152,280 @@ export default function ProjectsPage() {
               tab === t ? 'border-yellow-400 text-yellow-400' : 'border-transparent text-zinc-400 hover:text-yellow-300'
             } capitalize`}
           >
-            {t === 'active' ? 'Ongoing' : 'Completed'}
+            {t}
           </button>
         ))}
       </div>
 
-      {/* Summary */}
-      <div className="mt-4 grid md:grid-cols-2 gap-3">
-        <div className="border border-zinc-800 rounded p-3">
-          <div className="text-xs text-zinc-400">Projects</div>
-          <div className="text-xl font-semibold">{totals.count}</div>
-        </div>
-        <div className="border border-zinc-800 rounded p-3">
-          <div className="text-xs text-zinc-400">Total Budget (CFA)</div>
-          <div className="text-xl font-semibold">{totals.budget.toLocaleString()}</div>
-        </div>
-      </div>
-
       {/* Table */}
-      <div className="mt-4 overflow-x-auto border border-zinc-800 rounded-lg">
+      <div className="overflow-x-auto border border-zinc-800 rounded-lg mt-4">
         <table className="w-full text-sm">
           <thead className="bg-zinc-950/60 border-b border-zinc-800">
             <tr className="[&>th]:text-left [&>th]:px-3 [&>th]:py-2">
               <th>Project</th>
-              <th>Budget</th>
+              <th>Budget (CFA)</th>
               <th>Status</th>
               <th>Start</th>
               <th>End</th>
-              <th>Actions</th>
+              <th className="text-right pr-3">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={6} className="px-3 py-3">
-                  Loading…
-                </td>
+                <td colSpan={6} className="px-3 py-3">Loading…</td>
               </tr>
             )}
-            {!loading && projects.length === 0 && (
+            {!loading && filtered.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-3 py-3">
-                  No projects
-                </td>
+                <td colSpan={6} className="px-3 py-3">No projects</td>
               </tr>
             )}
-            {projects.map((p) => (
-              <tr key={p.id} className="border-t border-zinc-800 hover:bg-yellow-500/5">
-                <td className="px-3 py-2">
-                  <div className="font-medium">{p.name}</div>
-                  <div className="text-xs text-zinc-400 line-clamp-2 max-w-[40ch]">{p.description || '—'}</div>
-                </td>
-                <td className="px-3 py-2">{p.budget != null ? Number(p.budget).toLocaleString() : '—'}</td>
-                <td className="px-3 py-2 capitalize">{p.status}</td>
-                <td className="px-3 py-2">{p.start_date || '—'}</td>
-                <td className="px-3 py-2">{p.end_date || '—'}</td>
-                <td className="px-3 py-2">
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => openEdit(p)}
-                      className="px-2 py-1 rounded border border-zinc-700 hover:bg-yellow-500/10"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => removeProject(p.id)}
-                      className="px-2 py-1 rounded border border-zinc-700 hover:bg-yellow-500/10"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+
+            {filtered.map(p => {
+              const isEditing = editingId === p.id;
+              return (
+                <tr key={p.id} className="border-t border-zinc-800">
+                  {/* Name */}
+                  <td className="px-3 py-2">
+                    {isEditing ? (
+                      <input
+                        className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1"
+                        value={String(draft.name ?? '')}
+                        onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
+                        placeholder="Project name"
+                      />
+                    ) : (
+                      <div className="font-medium">{p.name}</div>
+                    )}
+                  </td>
+
+                  {/* Budget */}
+                  <td className="px-3 py-2">
+                    {isEditing ? (
+                      <input
+                        type="number"
+                        className="w-40 bg-zinc-900 border border-zinc-700 rounded px-2 py-1"
+                        value={draft.budget ?? ''}
+                        onChange={e => setDraft(d => ({ ...d, budget: e.target.value === '' ? null : Number(e.target.value) }))}
+                        placeholder="0"
+                      />
+                    ) : (
+                      <span>{Number(p.budget ?? 0).toLocaleString()}</span>
+                    )}
+                  </td>
+
+                  {/* Status */}
+                  <td className="px-3 py-2">
+                    {isEditing ? (
+                      <select
+                        className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1"
+                        value={(draft.status as Project['status']) ?? 'ongoing'}
+                        onChange={e => setDraft(d => ({ ...d, status: e.target.value as Project['status'] }))}
+                      >
+                        {STATUS_OPTIONS.map(s => (
+                          <option key={s} value={s}>{chipLabel(s)}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <StatusChip status={p.status} />
+                    )}
+                  </td>
+
+                  {/* Dates */}
+                  <td className="px-3 py-2">
+                    {isEditing ? (
+                      <input
+                        type="date"
+                        className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1"
+                        value={formatDateInput(draft.start_date)}
+                        onChange={e => setDraft(d => ({ ...d, start_date: e.target.value || null }))}
+                      />
+                    ) : (
+                      <span>{formatDateText(p.start_date)}</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    {isEditing ? (
+                      <input
+                        type="date"
+                        className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1"
+                        value={formatDateInput(draft.end_date)}
+                        onChange={e => setDraft(d => ({ ...d, end_date: e.target.value || null }))}
+                      />
+                    ) : (
+                      <span>{formatDateText(p.end_date)}</span>
+                    )}
+                  </td>
+
+                  {/* Actions */}
+                  <td className="px-3 py-2 text-right">
+                    {isEditing ? (
+                      <div className="flex gap-2 justify-end">
+                        <button onClick={saveEdit} className="px-2 py-1 rounded border border-zinc-700 hover:bg-yellow-500/10">
+                          Save
+                        </button>
+                        <button onClick={cancelEdit} className="px-2 py-1 rounded border border-zinc-700">
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          onClick={() => beginEdit(p)}
+                          className="px-2 py-1 rounded border border-zinc-700 hover:bg-yellow-500/10"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => toggleToCompleted(p)}
+                          className="px-2 py-1 rounded border border-zinc-700 hover:bg-yellow-500/10"
+                          title={p.status === 'completed' ? 'Mark Ongoing' : 'Mark Completed'}
+                        >
+                          {p.status === 'completed' ? 'Reopen' : 'Complete'}
+                        </button>
+                        <button
+                          onClick={() => remove(p)}
+                          className="px-2 py-1 rounded border border-zinc-700 hover:bg-red-500/10 hover:text-red-400"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
 
-      {/* Modal */}
-      {open && (
-        <div className="fixed inset-0 bg-black/60 grid place-items-center p-4">
-          <div className="w-full max-w-2xl rounded-lg border border-zinc-800 bg-zinc-950">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
-              <div className="font-semibold">{editing ? 'Edit Project' : 'Create Project'}</div>
-              <button onClick={() => setOpen(false)} className="px-2 py-1 rounded border border-zinc-700">
-                Close
+      {/* Create Modal */}
+      {showCreate && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm grid place-items-center p-4">
+          <div className="w-full max-w-2xl bg-zinc-950 border border-zinc-800 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-semibold">Create Project</h3>
+              <button onClick={() => setShowCreate(false)} className="px-2 py-1 border border-zinc-700 rounded">Close</button>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-3">
+              <label className="text-sm">
+                <div className="text-zinc-400 mb-1">Name*</div>
+                <input
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-2"
+                  value={newP.name ?? ''}
+                  onChange={e => setNewP(p => ({ ...p, name: e.target.value }))}
+                  placeholder="Project name"
+                />
+              </label>
+              <label className="text-sm">
+                <div className="text-zinc-400 mb-1">Budget (CFA)</div>
+                <input
+                  type="number"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-2"
+                  value={newP.budget ?? ''}
+                  onChange={e => setNewP(p => ({ ...p, budget: e.target.value === '' ? null : Number(e.target.value) }))}
+                  placeholder="0"
+                />
+              </label>
+
+              <label className="text-sm">
+                <div className="text-zinc-400 mb-1">Start Date</div>
+                <input
+                  type="date"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-2"
+                  value={formatDateInput(newP.start_date)}
+                  onChange={e => setNewP(p => ({ ...p, start_date: e.target.value || '' }))}
+                />
+              </label>
+              <label className="text-sm">
+                <div className="text-zinc-400 mb-1">End Date</div>
+                <input
+                  type="date"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-2"
+                  value={formatDateInput(newP.end_date)}
+                  onChange={e => setNewP(p => ({ ...p, end_date: e.target.value || '' }))}
+                />
+              </label>
+
+              <label className="text-sm md:col-span-2">
+                <div className="text-zinc-400 mb-1">Status</div>
+                <select
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-2"
+                  value={(newP.status as Project['status']) ?? 'ongoing'}
+                  onChange={e => setNewP(p => ({ ...p, status: e.target.value as Project['status'] }))}
+                >
+                  {STATUS_OPTIONS.map(s => (
+                    <option key={s} value={s}>{chipLabel(s)}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="text-sm md:col-span-2">
+                <div className="text-zinc-400 mb-1">Description</div>
+                <textarea
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-2"
+                  rows={4}
+                  value={newP.description ?? ''}
+                  onChange={e => setNewP(p => ({ ...p, description: e.target.value }))}
+                />
+              </label>
+            </div>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setShowCreate(false)} className="px-3 py-2 border border-zinc-700 rounded">
+                Cancel
+              </button>
+              <button onClick={create} className="px-3 py-2 border border-zinc-700 rounded hover:bg-yellow-500/10 hover:text-yellow-400">
+                Save Project
               </button>
             </div>
-            <form onSubmit={saveProject} className="p-4 grid md:grid-cols-2 gap-3">
-              <input
-                className="border border-zinc-800 bg-zinc-900 rounded px-3 py-2"
-                placeholder="Name*"
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-              />
-              <input
-                className="border border-zinc-800 bg-zinc-900 rounded px-3 py-2"
-                placeholder="Budget (CFA)"
-                value={form.budget}
-                onChange={(e) => setForm({ ...form, budget: e.target.value })}
-              />
-              <input
-                type="date"
-                className="border border-zinc-800 bg-zinc-900 rounded px-3 py-2"
-                value={form.start_date}
-                onChange={(e) => setForm({ ...form, start_date: e.target.value })}
-              />
-              <input
-                type="date"
-                className="border border-zinc-800 bg-zinc-900 rounded px-3 py-2"
-                value={form.end_date}
-                onChange={(e) => setForm({ ...form, end_date: e.target.value })}
-              />
-              <select
-                className="border border-zinc-800 bg-zinc-900 rounded px-3 py-2"
-                value={form.status}
-                onChange={(e) => setForm({ ...form, status: e.target.value })}
-              >
-                <option value="active">Ongoing</option>
-                <option value="completed">Completed</option>
-              </select>
-              <textarea
-                className="md:col-span-2 border border-zinc-800 bg-zinc-900 rounded px-3 py-2"
-                placeholder="Description"
-                value={form.description}
-                onChange={(e) => setForm({ ...form, description: e.target.value })}
-              />
-              <div className="md:col-span-2 flex justify-end gap-2">
-                <button type="button" onClick={() => setOpen(false)} className="px-3 py-2 rounded border border-zinc-700">
-                  Cancel
-                </button>
-                <button className="px-3 py-2 rounded bg-yellow-500/20 border border-yellow-500/40 hover:bg-yellow-500/30">
-                  Save Project
-                </button>
-              </div>
-            </form>
-            {err && <p className="px-4 pb-4 text-sm text-red-400">Error: {err}</p>}
+
+            {err && <p className="mt-3 text-sm text-red-400">Error: {err}</p>}
           </div>
         </div>
       )}
+
+      {err && <p className="mt-4 text-sm text-red-400">Error: {err}</p>}
     </main>
   );
+}
+
+/* ---------- UI helpers ---------- */
+
+function chipLabel(s: Project['status']) {
+  if (s === 'completed') return 'Completed';
+  if (s === 'on-hold') return 'On Hold';
+  return 'Ongoing';
+}
+
+function StatusChip({ status }: { status: Project['status'] }) {
+  const map: Record<Project['status'], string> = {
+    ongoing: 'bg-yellow-500/10 text-yellow-400 border-yellow-600/40',
+    completed: 'bg-emerald-500/10 text-emerald-400 border-emerald-600/40',
+    'on-hold': 'bg-orange-500/10 text-orange-400 border-orange-600/40',
+  };
+  return (
+    <span className={`px-2 py-1 rounded text-xs border ${map[status]}`}>
+      {chipLabel(status)}
+    </span>
+  );
+}
+
+function formatDateText(d?: string | null) {
+  if (!d) return '—';
+  try {
+    return new Date(d).toISOString().slice(0, 10);
+  } catch {
+    return String(d);
+  }
+}
+function formatDateInput(d?: string | null) {
+  if (!d) return '';
+  try {
+    return new Date(d).toISOString().slice(0, 10);
+  } catch {
+    return '';
+  }
 }
