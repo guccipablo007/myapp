@@ -1,225 +1,263 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { useEffect, useMemo, useState } from 'react';
+import { supabase as supabaseFactory } from '@/lib/supabase';
+import MeetingModal from './MeetingModal';
 
-type Meeting = {
-  id: number;
-  title: string;
-  date: string;          // date (string for simplicity)
-  recorded_by?: string;
-  notes?: string;
-  attachments?: Attachment[];
-};
+// Toggle signed/public URLs for attachments in the modal
+export const USE_SIGNED_URLS = true;
 
-type Attachment = {
+type MeetingRow = {
   id: number;
-  meeting_id: number;
-  file_path: string;
-  uploaded_at: string;
+  title: string | null;
+  date: string | null;         // ISO date (YYYY-MM-DD)
+  recorded_by?: string | null; // optional if your schema has it
 };
 
 export default function MeetingsPage() {
-  const sb = supabase();
-  const [meetings, setMeetings] = useState<Meeting[]>([]);
-  const [openId, setOpenId] = useState<number | null>(null);
-  const [role, setRole] = useState<'sysadmin'|'secretary'|'member'|'unknown'>('unknown');
+  const sb = useMemo(() => supabaseFactory(), []);
+  const [rows, setRows] = useState<MeetingRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  async function loadRole() {
-    // If you already store the role in user_profiles, fetch it here.
-    const session = (await sb.auth.getSession()).data.session;
-    if (!session?.user) return setRole('member');
-    const { data } = await sb.from('user_profiles').select('role').eq('user_id', session.user.id).maybeSingle();
-    setRole((data?.role as any) ?? 'member');
-  }
+  // for role gating (upload/delete)
+  const [role, setRole] = useState<string>('guest');
+  const canWrite = ['sysadmin', 'secretary'].includes(role);
 
-  async function load() {
-    const { data: mtgs } = await sb
-      .from('meetings')
-      .select('id, title, date, recorded_by, notes')
-      .order('date', { ascending: false });
-
-    const ids = (mtgs ?? []).map(m => m.id);
-    let atts: Attachment[] = [];
-    if (ids.length) {
-      const { data } = await sb
-        .from('meeting_attachments')
-        .select('*')
-        .in('meeting_id', ids)
-        .order('uploaded_at', { ascending: false });
-      atts = data ?? [];
-    }
-
-    const joined = (mtgs ?? []).map(m => ({
-      ...m,
-      attachments: atts.filter(a => a.meeting_id === m.id)
-    })) as Meeting[];
-
-    setMeetings(joined);
-  }
+  const [showNew, setShowNew] = useState(false);
+  const [active, setActive] = useState<MeetingRow | null>(null);
 
   useEffect(() => {
-    loadRole();
+    let alive = true;
+
+    (async () => {
+      try {
+        const { data: sess } = await sb.auth.getSession();
+        const uid = sess?.session?.user?.id;
+        if (!uid) {
+          if (alive) setRole('guest');
+          return;
+        }
+        const { data: prof } = await sb
+          .from('user_profiles')
+          .select('role')
+          .eq('user_id', uid)
+          .maybeSingle();
+
+        if (alive) setRole(prof?.role ?? 'member');
+      } catch {
+        if (alive) setRole('guest');
+      }
+    })();
+
+    return () => { alive = false; };
+  }, [sb]);
+
+  const load = async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      // keep selection minimal to avoid column-mismatch headaches
+      const { data, error } = await sb
+        .from('meetings')
+        .select('id,title,date,recorded_by')
+        .order('date', { ascending: false });
+
+      if (error) throw error;
+      setRows((data ?? []) as MeetingRow[]);
+    } catch (e: any) {
+      setErr(e?.message ?? 'Failed to load meetings');
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const openMeeting = useMemo(
-    () => meetings.find(m => m.id === openId) ?? null,
-    [openId, meetings]
-  );
+  // Create a new meeting (title + date only to be schema-safe)
+  const createMeeting = async (title: string, dateISO: string) => {
+    setErr(null);
+    try {
+      const { data, error } = await sb
+        .from('meetings')
+        .insert([{ title, date: dateISO }])
+        .select('id,title,date,recorded_by')
+        .maybeSingle();
+
+      if (error) throw error;
+      if (data) {
+        setShowNew(false);
+        setActive(data as MeetingRow); // open modal right away
+        await load();
+      }
+    } catch (e: any) {
+      setErr(e?.message ?? 'Failed to create meeting');
+    }
+  };
 
   return (
-    <main className="p-6 max-w-6xl mx-auto">
-      <h1 className="text-2xl font-bold mb-1">Meetings & Minutes</h1>
-      <p className="text-sm text-zinc-400 mb-6">
-        View meeting notes and download attachments.
+    <div className="p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">Meetings &amp; Minutes</h1>
+        <div className="text-sm opacity-70">Role: {role}</div>
+      </div>
+
+      <p className="opacity-70">
+        View meeting notes and manage attachments per meeting folder.
       </p>
 
-      <div className="border border-zinc-800 rounded-lg overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-zinc-950/60 text-zinc-400">
-            <tr>
-              <th className="text-left p-3">Date</th>
-              <th className="text-left p-3">Title</th>
-              <th className="text-left p-3">Recorded By</th>
-              <th className="text-left p-3">Attachments</th>
-              <th className="text-right p-3">Actions</th>
+      <div className="flex items-center justify-between">
+        <div />
+        {canWrite && (
+          <button
+            type="button"
+            onClick={() => setShowNew(true)}
+            className="rounded bg-yellow-500/20 border border-yellow-500/40 px-3 py-2 text-sm hover:bg-yellow-500/30"
+          >
+            + New Meeting
+          </button>
+        )}
+      </div>
+
+      {err && (
+        <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+          Error: {err}
+        </div>
+      )}
+
+      <div className="overflow-x-auto rounded border border-zinc-800">
+        <table className="min-w-full text-sm">
+          <thead className="bg-zinc-900/40">
+            <tr className="text-left">
+              <th className="px-4 py-2">Date</th>
+              <th className="px-4 py-2">Title</th>
+              <th className="px-4 py-2">Recorded By</th>
+              <th className="px-4 py-2">Attachments</th>
+              <th className="px-4 py-2">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {meetings.length === 0 && (
+            {loading ? (
               <tr>
-                <td colSpan={5} className="p-4 text-zinc-500">No meetings yet.</td>
+                <td className="px-4 py-6" colSpan={5}>Loading…</td>
               </tr>
-            )}
-            {meetings.map(m => (
-              <tr key={m.id} className="border-t border-zinc-800 hover:bg-yellow-500/5">
-                <td className="p-3">{m.date ?? '-'}</td>
-                <td className="p-3">{m.title}</td>
-                <td className="p-3">{m.recorded_by ?? '-'}</td>
-                <td className="p-3">{m.attachments?.length ?? 0}</td>
-                <td className="p-3 text-right">
-                  <button
-                    onClick={() => setOpenId(m.id)}
-                    className="px-3 py-1.5 rounded border border-zinc-700 hover:bg-yellow-500/10"
-                  >
-                    View
-                  </button>
+            ) : rows.length === 0 ? (
+              <tr>
+                <td className="px-4 py-6 opacity-70" colSpan={5}>
+                  No meetings yet.
                 </td>
               </tr>
-            ))}
+            ) : (
+              rows.map((m) => {
+                const folder = `meetings/${m.id}`;
+                return (
+                  <tr key={m.id} className="border-t border-zinc-800/60">
+                    <td className="px-4 py-2">{m.date ?? '—'}</td>
+                    <td className="px-4 py-2">{m.title ?? 'Untitled'}</td>
+                    <td className="px-4 py-2">{m.recorded_by ?? '—'}</td>
+                    <td className="px-4 py-2 font-mono text-xs">{folder}</td>
+                    <td className="px-4 py-2">
+                      <button
+                        type="button"
+                        onClick={() => setActive(m)}
+                        className="rounded border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800/60"
+                      >
+                        Open
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
           </tbody>
         </table>
       </div>
 
-      {openMeeting && (
-        <MeetingModal
-          meeting={openMeeting}
-          onClose={() => setOpenId(null)}
-          role={role}
-          refresh={load}
+      {/* Create modal */}
+      {showNew && (
+        <NewMeetingDialog
+          onCancel={() => setShowNew(false)}
+          onCreate={createMeeting}
         />
       )}
-    </main>
+
+      {/* Details modal (with attachments for that meeting) */}
+      {active && (
+        <MeetingModal
+          meeting={active}
+          onClose={() => setActive(null)}
+          canWrite={canWrite}
+          useSignedUrls={USE_SIGNED_URLS}
+        />
+      )}
+    </div>
   );
 }
 
-function MeetingModal({
-  meeting,
-  onClose,
-  role,
-  refresh
+/* ---------- Small inline dialog for creating a meeting ---------- */
+function NewMeetingDialog({
+  onCancel,
+  onCreate,
 }: {
-  meeting: Meeting;
-  onClose: () => void;
-  role: 'sysadmin'|'secretary'|'member'|'unknown';
-  refresh: () => Promise<void>;
+  onCancel: () => void;
+  onCreate: (title: string, dateISO: string) => void;
 }) {
-  const sb = supabase();
-  const fileRef = useRef<HTMLInputElement | null>(null);
-  const canUpload = role === 'sysadmin' || role === 'secretary';
+  const [title, setTitle] = useState('');
+  const [dateISO, setDateISO] = useState(() => new Date().toISOString().slice(0, 10));
+  const [busy, setBusy] = useState(false);
 
-  async function handleUpload() {
-    const f = fileRef.current?.files?.[0];
-    if (!f) return;
-    const fileName = `${meeting.id}-${Date.now()}-${f.name}`.replace(/\s+/g, '_');
-    const path = `meetings/${fileName}`;
-
-    // upload to bucket
-    const { error: upErr } = await sb.storage.from('meetings').upload(path, f, {
-      cacheControl: '3600',
-      upsert: false
-    });
-    if (upErr) return alert(upErr.message);
-
-    // record in DB
-    const { error: insErr } = await sb
-      .from('meeting_attachments')
-      .insert({ meeting_id: meeting.id, file_path: path });
-
-    if (insErr) return alert(insErr.message);
-
-    await refresh();
-    alert('File uploaded.');
-  }
+  const submit = async () => {
+    if (!title.trim()) return;
+    setBusy(true);
+    await onCreate(title.trim(), dateISO);
+    setBusy(false);
+  };
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className="w-[min(850px,95vw)] max-h-[85vh] overflow-auto border border-zinc-800 rounded-lg bg-zinc-950">
-        <div className="flex items-center justify-between p-4 border-b border-zinc-800">
-          <div>
-            <h3 className="text-lg font-semibold">{meeting.title}</h3>
-            <div className="text-xs text-zinc-400">{meeting.date} • {meeting.recorded_by ?? '—'}</div>
-          </div>
-          <button onClick={onClose} className="px-3 py-1.5 rounded border border-zinc-700 hover:bg-yellow-500/10">Close</button>
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+      <div className="w-full max-w-lg rounded border border-zinc-800 bg-zinc-950 p-4 space-y-4">
+        <h2 className="text-lg font-semibold">New Meeting</h2>
+
+        <div className="space-y-2">
+          <label className="text-sm opacity-70">Title</label>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className="w-full rounded border border-zinc-700 bg-transparent px-3 py-2 text-sm outline-none"
+            placeholder="e.g. Monthly Committee Review"
+          />
         </div>
 
-        <div className="p-4 space-y-5">
-          <section>
-            <h4 className="font-semibold mb-2">Minutes / Notes</h4>
-            <div className="text-sm text-zinc-300 whitespace-pre-wrap">
-              {meeting.notes ?? 'No notes added.'}
-            </div>
-          </section>
+        <div className="space-y-2">
+          <label className="text-sm opacity-70">Date</label>
+          <input
+            type="date"
+            value={dateISO}
+            onChange={(e) => setDateISO(e.target.value)}
+            className="w-full rounded border border-zinc-700 bg-transparent px-3 py-2 text-sm outline-none"
+          />
+        </div>
 
-          <section>
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="font-semibold">Attachments</h4>
-              {canUpload && (
-                <div className="flex items-center gap-2">
-                  <input ref={fileRef} type="file" className="text-xs" />
-                  <button
-                    onClick={handleUpload}
-                    className="px-3 py-1.5 rounded border border-zinc-700 hover:bg-yellow-500/10"
-                  >
-                    Upload
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <ul className="space-y-2 text-sm">
-              {(meeting.attachments ?? []).length === 0 && (
-                <li className="text-zinc-400">No files.</li>
-              )}
-              {(meeting.attachments ?? []).map(a => {
-                // public bucket: direct URL
-                const publicUrl = supabase().storage.from('meetings').getPublicUrl(a.file_path).data.publicUrl;
-                return (
-                  <li key={a.id} className="flex items-center justify-between border border-zinc-800 rounded p-2">
-                    <span className="truncate">{a.file_path.split('/').slice(-1)[0]}</span>
-                    <a
-                      href={publicUrl}
-                      target="_blank"
-                      className="px-3 py-1 rounded border border-zinc-700 hover:bg-yellow-500/10"
-                    >
-                      Download
-                    </a>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
+        <div className="flex items-center justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-800/60"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!title.trim() || busy}
+            className="rounded bg-yellow-500/20 border border-yellow-500/40 px-3 py-2 text-sm hover:bg-yellow-500/30 disabled:opacity-50"
+          >
+            {busy ? 'Creating…' : 'Create'}
+          </button>
         </div>
       </div>
     </div>
