@@ -22,52 +22,65 @@ export default async function AdminInsights() {
   const s = sb();
 
   // Members
-  let totalMembers = 0, activeMembers = 0;
+  let totalMembers = 0,
+    activeMembers = 0;
   try {
     const all = await s.from("members").select("*", { count: "exact", head: true });
     if (!all.error) totalMembers = all.count ?? 0;
   } catch {}
   try {
-    const act = await s.from("members").select("*", { count: "exact", head: true }).eq("status","active");
+    const act = await s.from("members").select("*", { count: "exact", head: true }).eq("status", "active");
     if (!act.error) activeMembers = act.count ?? 0;
   } catch {}
 
-  // Last 30 days window
-  const since = new Date(); since.setDate(since.getDate() - 30);
-  const sinceISO = since.toISOString().slice(0,10);
+  // Last 30 days
+  const since = new Date();
+  since.setDate(since.getDate() - 30);
+  const sinceISO = since.toISOString().slice(0, 10);
 
   // Fines
-  let finesCollected30d = 0, finesUnpaid = 0;
+  let finesCollected30d = 0,
+    finesUnpaid = 0;
   try {
-    const fpaid = await s.from("fines").select("amount,status,paid_on,created_at").eq("status","paid");
+    const fpaid = await s
+      .from("fines")
+      .select("amount,status,paid_on,created_at")
+      .eq("status", "paid");
     if (!fpaid.error && fpaid.data) {
       for (const r of fpaid.data) {
-        const d = pickDate(r, ["paid_on","created_at"]);
+        const d = pickDate(r, ["paid_on", "created_at"]);
         if (d && d >= new Date(sinceISO)) finesCollected30d += toNum(r.amount);
       }
     }
   } catch {}
   try {
-    const funpaid = await s.from("fines").select("amount,status").eq("status","unpaid");
+    const funpaid = await s.from("fines").select("amount,status").eq("status", "unpaid");
     if (!funpaid.error && funpaid.data) {
       finesUnpaid = funpaid.data.reduce((t: number, r: any) => t + toNum(r.amount), 0);
     }
   } catch {}
 
   // Loans
-  let loansIssued30d = 0, loansRepaid30d = 0, loansOutstanding = 0;
+  let loansIssued30d = 0,
+    loansRepaid30d = 0,
+    loansOutstanding = 0;
   try {
-    const lq = await s.from("loans").select("amount,amount_issued,amount_repaid,status,issued_on,repaid_on,created_at");
+    const lq = await s
+      .from("loans")
+      .select("amount,amount_issued,amount_repaid,status,issued_on,repaid_on,created_at");
     if (!lq.error && lq.data) {
       for (const r of lq.data) {
         const issued = toNum(r.amount_issued ?? r.amount);
         const repaid = toNum(r.amount_repaid);
-        const issuedDate = pickDate(r, ["issued_on","created_at"]);
+        const issuedDate = pickDate(r, ["issued_on", "created_at"]);
         const repaidDate = pickDate(r, ["repaid_on"]);
         if (issuedDate && issuedDate >= new Date(sinceISO)) loansIssued30d += issued;
         if (repaidDate && repaidDate >= new Date(sinceISO)) loansRepaid30d += (repaid || issued);
         const st = String(r.status || "").toLowerCase();
-        if (["active","outstanding","issued"].includes(st)) loansOutstanding += Math.max(0, issued - repaid);
+        if (["active", "outstanding", "issued"].includes(st)) {
+          const bal = issued - repaid;
+          loansOutstanding += bal > 0 ? bal : 0;
+        }
       }
     }
   } catch {}
@@ -83,7 +96,7 @@ export default async function AdminInsights() {
       .limit(1);
     if (!mq.error && mq.data?.[0]) {
       const row = mq.data[0] as any;
-      const d = pickDate(row, ["scheduled_for","date","created_at"]);
+      const d = pickDate(row, ["scheduled_for", "date", "created_at"]);
       nextMeeting = { title: row.title, when: d ? d.toLocaleString() : "-" };
     }
   } catch {}
@@ -96,18 +109,24 @@ export default async function AdminInsights() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card label="Members"
-              value={`${formatNumber(totalMembers)} total`}
-              hint={`${formatNumber(activeMembers)} active`}
-              tooltip="Counts from members table." />
-        <Card label="Fines"
-              value={formatCurrency(finesCollected30d,"XAF")}
-              hint={`${formatCurrency(finesUnpaid,"XAF")} unpaid`}
-              tooltip="Paid in last 30 days; unpaid = status 'unpaid'." />
-        <Card label="Loans"
-              value={formatCurrency(loansIssued30d,"XAF")}
-              hint={`${formatCurrency(loansRepaid30d,"XAF")} repaid • ${formatCurrency(loansOutstanding,"XAF")} outstanding`}
-              tooltip="Issued/repaid in last 30 days; outstanding = issued - repaid for active loans." />
+        <Card
+          label="Members"
+          value={`${formatNumber(totalMembers)} total`}
+          hint={`${formatNumber(activeMembers)} active`}
+          tooltip="Counts from members table."
+        />
+        <Card
+          label="Fines"
+          value={formatCurrency(finesCollected30d)}
+          hint={`${formatCurrency(finesUnpaid)} unpaid`}
+          tooltip="Paid in last 30 days; unpaid = status 'unpaid'."
+        />
+        <Card
+          label="Loans"
+          value={formatCurrency(loansIssued30d)}
+          hint={`${formatCurrency(loansRepaid30d)} repaid • ${formatCurrency(loansOutstanding)} outstanding`}
+          tooltip="Issued/repaid in last 30 days; outstanding = issued - repaid for active loans."
+        />
       </div>
 
       <div className="rounded-xl border border-white/10 bg-white/5 p-4">
@@ -130,8 +149,16 @@ export default async function AdminInsights() {
 }
 
 function Card({
-  label, value, hint, tooltip,
-}: { label: string; value: string; hint?: string; tooltip?: string }) {
+  label,
+  value,
+  hint,
+  tooltip,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  tooltip?: string;
+}) {
   return (
     <div
       className="rounded-xl border border-white/10 bg-black/20 p-4 hover:border-white/20 transition-colors"
