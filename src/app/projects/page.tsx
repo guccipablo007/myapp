@@ -17,7 +17,9 @@ const STATUS_OPTIONS: Array<Project['status']> = ['ongoing', 'completed', 'on-ho
 
 export default function ProjectsPage() {
   const sb = supabase();
+
   const [tab, setTab] = useState<'ongoing' | 'completed'>('ongoing');
+  const [query, setQuery] = useState(''); // 🔎 quick search
 
   const [rows, setRows] = useState<Project[]>([]);
   const [loading, setLoading] = useState(false);
@@ -55,10 +57,28 @@ export default function ProjectsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const filtered = useMemo(
+  // tab filter
+  const byTab = useMemo(
     () => rows.filter(r => (tab === 'ongoing' ? r.status !== 'completed' : r.status === 'completed')),
     [rows, tab]
   );
+
+  // search filter (name + description)
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return byTab;
+    return byTab.filter(p =>
+      (p.name || '').toLowerCase().includes(q) ||
+      (p.description || '').toLowerCase().includes(q)
+    );
+  }, [byTab, query]);
+
+  // totals bar for visible list
+  const totals = useMemo(() => {
+    const count = filtered.length;
+    const totalBudget = filtered.reduce((t, p) => t + Number(p.budget ?? 0), 0);
+    return { count, totalBudget };
+  }, [filtered]);
 
   function beginEdit(p: Project) {
     setEditingId(p.id);
@@ -77,20 +97,22 @@ export default function ProjectsPage() {
     setEditingId(null);
 
     const payload = { ...draft };
-    // Avoid sending undefined keys that can violate constraints
     Object.keys(payload).forEach(k => (payload as any)[k] === undefined && delete (payload as any)[k]);
 
     const { error } = await sb.from('projects').update(payload).eq('id', editingId);
     if (error) {
       setErr(error.message);
-      load(); // revert
+      load(); // revert if failed
     }
   }
 
   async function toggleToCompleted(p: Project) {
     const updated = rows.map(r => (r.id === p.id ? { ...r, status: r.status === 'completed' ? 'ongoing' : 'completed' } : r));
     setRows(updated);
-    const { error } = await sb.from('projects').update({ status: p.status === 'completed' ? 'ongoing' : 'completed' }).eq('id', p.id);
+    const { error } = await sb
+      .from('projects')
+      .update({ status: p.status === 'completed' ? 'ongoing' : 'completed' })
+      .eq('id', p.id);
     if (error) {
       setErr(error.message);
       load();
@@ -129,17 +151,40 @@ export default function ProjectsPage() {
 
   return (
     <main className="pt-6 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold">Community Projects</h1>
           <p className="text-sm text-zinc-400">Track budgets and timelines for ongoing and completed projects.</p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="px-3 py-2 rounded border border-zinc-700 hover:bg-yellow-500/10 hover:text-yellow-400"
-        >
-          + Create New Project
-        </button>
+
+        <div className="flex items-center gap-2">
+          {/* 🔎 Quick Search */}
+          <div className="relative">
+            <input
+              className="pl-9 pr-8 py-2 rounded bg-zinc-900 border border-zinc-700 w-64"
+              placeholder="Search projects…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500">🔎</span>
+            {query && (
+              <button
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-200"
+                onClick={() => setQuery('')}
+                title="Clear"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
+          <button
+            onClick={() => setShowCreate(true)}
+            className="px-3 py-2 rounded border border-zinc-700 hover:bg-yellow-500/10 hover:text-yellow-400"
+          >
+            + Create New Project
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -155,6 +200,18 @@ export default function ProjectsPage() {
             {t}
           </button>
         ))}
+      </div>
+
+      {/* Totals bar (for visible, filtered list) */}
+      <div className="grid md:grid-cols-3 gap-3 mt-4">
+        <TotalCard label="Projects" value={totals.count.toLocaleString()} />
+        <TotalCard label="Total Budget (CFA)" value={totals.totalBudget.toLocaleString()} />
+        <TotalCard
+          label="Avg Budget (CFA)"
+          value={
+            totals.count ? Math.round(totals.totalBudget / totals.count).toLocaleString() : '0'
+          }
+        />
       </div>
 
       {/* Table */}
@@ -393,6 +450,15 @@ export default function ProjectsPage() {
 }
 
 /* ---------- UI helpers ---------- */
+
+function TotalCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="border border-zinc-800 rounded p-3 bg-zinc-950/60">
+      <div className="text-xs text-zinc-400">{label}</div>
+      <div className="text-xl font-semibold">{value}</div>
+    </div>
+  );
+}
 
 function chipLabel(s: Project['status']) {
   if (s === 'completed') return 'Completed';
