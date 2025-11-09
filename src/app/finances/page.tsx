@@ -1,128 +1,257 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Legend } from 'recharts';
+import {
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Legend,
+} from 'recharts';
 
-type Metric = {
-  finesCollected: number;
-  loansIssued: number;
-  loansRepaid: number;
-  projectFunds: number;
+/** ───────────────────────────────────────────────────────────────────────────
+ *  Types (keep loose on dates because table columns may differ across installs)
+ *  fines:   amount numeric, status 'paid'|'unpaid', date column could be 'created_at' or 'date'
+ *  loans:   principal numeric, status 'repaid'|'active'|'defaulted', date column is usually 'issued_on'
+ *  If your column names differ, tweak the `pickDate()` usage below.
+ *  ─────────────────────────────────────────────────────────────────────────── */
+
+type Fine = {
+  amount?: number | null;
+  status?: string | null;
+  created_at?: string | null;
+  date?: string | null;
+  paid_on?: string | null;
 };
+
+type Loan = {
+  principal?: number | null;
+  status?: string | null;
+  issued_on?: string | null;
+  created_at?: string | null;
+};
+
+type RangeKey = '6m' | '12m' | '24m';
+
+const COLORS = ['#22c55e', '#eab308', '#60a5fa', '#f43f5e', '#a78bfa'];
 
 export default function FinancesPage() {
   const sb = supabase();
-  const [metrics, setMetrics] = useState<Metric>({ finesCollected: 0, loansIssued: 0, loansRepaid: 0, projectFunds: 0 });
-  const [flow, setFlow] = useState<{ month: string; income: number; expense: number }[]>([]);
+
+  const [range, setRange] = useState<RangeKey>('12m');
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const [fines, setFines] = useState<Fine[]>([]);
+  const [loans, setLoans] = useState<Loan[]>([]);
 
   async function load() {
-    // totals
-    const [fines, loans] = await Promise.all([
-      sb.from('fines').select('amount,status'),
-      sb.from('loans').select('amount,status')
+    setLoading(true);
+    setErr(null);
+
+    // pull only the fields we actually use (safe if columns are missing)
+    const [fRes, lRes] = await Promise.all([
+      sb.from('fines').select('amount, status, created_at, date, paid_on'),
+      sb.from('loans').select('principal, status, issued_on, created_at'),
     ]);
 
-    const finesCollected = (fines.data ?? [])
-      .filter((f: any) => f.status === 'paid')
-      .reduce((t: number, f: any) => t + Number(f.amount ?? 0), 0);
+    setLoading(false);
 
-    const loansIssued = (loans.data ?? [])
-      .reduce((t: number, l: any) => t + Number(l.amount ?? 0), 0);
+    if (fRes.error) setErr(fRes.error.message);
+    if (lRes.error) setErr(prev => prev ?? lRes.error?.message ?? null);
 
-    const loansRepaid = (loans.data ?? [])
-      .filter((l: any) => l.status === 'repaid')
-      .reduce((t: number, l: any) => t + Number(l.amount ?? 0), 0);
-
-    const projectFunds = Math.max(finesCollected + loansRepaid - loansIssued, 0);
-
-    setMetrics({ finesCollected, loansIssued, loansRepaid, projectFunds });
-
-    // fake monthly flow for demo (replace with real sums later)
-    setFlow([
-      { month: 'Jan', income: 10000, expense: 7000 },
-      { month: 'Feb', income: 12000, expense: 9000 },
-      { month: 'Mar', income: 14000, expense: 10000 },
-      { month: 'Apr', income: 8000, expense: 6000 },
-      { month: 'May', income: 15000, expense: 11000 },
-    ]);
+    setFines((fRes.data ?? []) as Fine[]);
+    setLoans((lRes.data ?? []) as Loan[]);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const COLORS = ['#facc15', '#60a5fa', '#34d399', '#f87171'];
-  const pieData = [
-    { name: 'Fines Collected', value: metrics.finesCollected },
-    { name: 'Loans Issued', value: metrics.loansIssued },
-    { name: 'Loans Repaid', value: metrics.loansRepaid },
-    { name: 'Funds for Projects', value: metrics.projectFunds },
-  ];
+  /** ───────────────────────────── helpers ───────────────────────────── */
+
+  function pickDate(obj: any, keys: string[]): Date | null {
+    for (const k of keys) {
+      const v = obj?.[k];
+      if (v) {
+        const d = new Date(v);
+        if (!Number.isNaN(d.getTime())) return d;
+      }
+    }
+    return null;
+  }
+
+  function ym(d: Date) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  function monthsBack(n: number) {
+    const out: string[] = [];
+    const base = new Date();
+    base.setDate(1);
+    for (let i = n - 1; i >= 0; i--) {
+      const d = new Date(base);
+      d.setMonth(d.getMonth() - i);
+      out.push(ym(d));
+    }
+    return out;
+  }
+
+  /** ───────────────────────────── summaries ───────────────────────────── */
+
+  const totals = useMemo(() => {
+    const finesPaid = fines.reduce((t, f) => t + (f.status === 'paid' ? Number(f.amount ?? 0) : 0), 0);
+    const finesUnpaid = fines.reduce((t, f) => t + (f.status === 'unpaid' ? Number(f.amount ?? 0) : 0), 0);
+
+    const loansIssued = loans.reduce((t, l) => t + Number(l.principal ?? 0), 0);
+    const loansRepaid = loans.reduce((t, l) => t + (l.status === 'repaid' ? Number(l.principal ?? 0) : 0), 0);
+    const loansOutstanding = Math.max(0, loansIssued - loansRepaid);
+
+    return { finesPaid, finesUnpaid, loansIssued, loansRepaid, loansOutstanding };
+  }, [fines, loans]);
+
+  /** ───────── pie data: composition (Collected vs Outstanding) ──────── */
+  const pieData = useMemo(
+    () => [
+      { name: 'Fines Collected', value: totals.finesPaid },
+      { name: 'Outstanding Loans', value: totals.loansOutstanding },
+    ],
+    [totals]
+  );
+
+  /** ───────── monthly cashflow data (Inflow vs Outflow) ─────────
+   *  inflow  = finesPaid(month) + loansRepaid(month)
+   *  outflow = loansIssued(month)
+   */
+  const cashData = useMemo(() => {
+    const months = monthsBack(range === '6m' ? 6 : range === '12m' ? 12 : 24);
+
+    const byMonth = new Map<string, { inflow: number; outflow: number }>();
+    months.forEach(m => byMonth.set(m, { inflow: 0, outflow: 0 }));
+
+    // Fines inflow (paid)
+    for (const f of fines) {
+      if (f.status !== 'paid') continue;
+      const d = pickDate(f, ['paid_on', 'date', 'created_at']);
+      if (!d) continue;
+      const key = ym(d);
+      if (!byMonth.has(key)) continue;
+      byMonth.get(key)!.inflow += Number(f.amount ?? 0);
+    }
+
+    // Loans issued (outflow)
+    for (const l of loans) {
+      const d = pickDate(l, ['issued_on', 'created_at']);
+      if (!d) continue;
+      const key = ym(d);
+      if (!byMonth.has(key)) continue;
+      byMonth.get(key)!.outflow += Number(l.principal ?? 0);
+    }
+
+    // Loans repaid (inflow) — if you track repayment dates in another table,
+    // replace this with that source. Here we assume status 'repaid' means
+    // it was repaid on issued_on month (best effort).
+    for (const l of loans) {
+      if (l.status !== 'repaid') continue;
+      const d = pickDate(l, ['issued_on', 'created_at']);
+      if (!d) continue;
+      const key = ym(d);
+      if (!byMonth.has(key)) continue;
+      byMonth.get(key)!.inflow += Number(l.principal ?? 0);
+    }
+
+    return months.map(m => ({ month: m, ...byMonth.get(m)! }));
+  }, [fines, loans, range]);
 
   return (
-    <main className="p-6 max-w-6xl mx-auto">
-      <h1 className="text-2xl font-bold mb-1">Financial Overview 💰</h1>
-      <p className="text-sm text-zinc-400 mb-6">
-        Review collected fines, issued loans, repayments, and available funds.
-      </p>
+    <main className="pt-6 max-w-6xl mx-auto">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold">Financial Overview</h1>
+          <p className="text-sm text-zinc-400">Totals, composition, and monthly cash flow.</p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-zinc-400">Range:</label>
+          <select
+            className="bg-zinc-900 border border-zinc-700 rounded px-2 py-2"
+            value={range}
+            onChange={(e) => setRange(e.target.value as RangeKey)}
+          >
+            <option value="6m">Last 6 months</option>
+            <option value="12m">Last 12 months</option>
+            <option value="24m">Last 24 months</option>
+          </select>
+        </div>
+      </div>
 
       {/* Summary tiles */}
-      <div className="grid sm:grid-cols-4 gap-4 mb-10">
-        <Tile label="💵 Fines Collected" value={`${metrics.finesCollected.toLocaleString()} CFA`} />
-        <Tile label="🧾 Loans Issued" value={`${metrics.loansIssued.toLocaleString()} CFA`} />
-        <Tile label="💳 Loans Repaid" value={`${metrics.loansRepaid.toLocaleString()} CFA`} />
-        <Tile label="🧱 Funds for Projects" value={`${metrics.projectFunds.toLocaleString()} CFA`} />
+      <div className="grid md:grid-cols-5 gap-3 mt-4">
+        <Tile label="💵 Fines Collected" value={totals.finesPaid} />
+        <Tile label="🧾 Fines Unpaid" value={totals.finesUnpaid} />
+        <Tile label="🏦 Loans Issued" value={totals.loansIssued} />
+        <Tile label="💳 Loans Repaid" value={totals.loansRepaid} />
+        <Tile label="⏳ Loans Outstanding" value={totals.loansOutstanding} />
       </div>
 
       {/* Charts */}
-      <div className="grid md:grid-cols-2 gap-8">
-        {/* Pie */}
-        <div className="border border-zinc-800 rounded-lg p-4 bg-zinc-950/60">
-          <h2 className="font-semibold mb-4">Distribution</h2>
-          <ResponsiveContainer width="100%" height={300}>
-            <PieChart>
-              <Pie data={pieData} dataKey="value" outerRadius={100} label>
-                {pieData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-              </Pie>
-              <Tooltip />
-              <Legend />
-            </PieChart>
-          </ResponsiveContainer>
+      <div className="grid md:grid-cols-2 gap-4 mt-6">
+        <div className="border border-zinc-800 rounded-lg p-3 bg-zinc-950/60">
+          <h3 className="font-medium mb-2">Composition</h3>
+          <div className="h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={pieData} dataKey="value" nameKey="name" outerRadius={90}>
+                  {pieData.map((_, i) => (
+                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(v: any) => Number(v).toLocaleString()} />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
         </div>
 
-        {/* Line chart */}
-        <div className="border border-zinc-800 rounded-lg p-4 bg-zinc-950/60">
-          <h2 className="font-semibold mb-4">Monthly Cash Flow</h2>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={flow}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-              <XAxis dataKey="month" />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Line type="monotone" dataKey="income" stroke="#22c55e" />
-              <Line type="monotone" dataKey="expense" stroke="#f59e0b" />
-            </LineChart>
-          </ResponsiveContainer>
+        <div className="border border-zinc-800 rounded-lg p-3 bg-zinc-950/60">
+          <h3 className="font-medium mb-2">Monthly Cash Flow</h3>
+          <div className="h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={cashData} margin={{ left: 10, right: 10 }}>
+                <CartesianGrid strokeOpacity={0.2} />
+                <XAxis dataKey="month" />
+                <YAxis />
+                <Tooltip formatter={(v: any) => Number(v).toLocaleString()} />
+                <Legend />
+                <Line type="monotone" dataKey="inflow" name="Inflow" stroke="#22c55e" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="outflow" name="Outflow" stroke="#eab308" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
         </div>
       </div>
 
-      <div className="mt-8 flex justify-end">
-        <button
-          onClick={() => alert('Coming soon: export as CSV/PDF')}
-          className="px-4 py-2 rounded border border-zinc-700 hover:bg-yellow-500/10"
-        >
-          Export Report
-        </button>
-      </div>
+      {loading && <p className="mt-3 text-sm text-zinc-400">Loading…</p>}
+      {err && <p className="mt-3 text-sm text-red-400">Error: {err}</p>}
     </main>
   );
 }
 
-function Tile({ label, value }: { label: string; value: string }) {
+/* ───────────────────────── small UI bits ───────────────────────── */
+
+function Tile({ label, value }: { label: string; value: number }) {
   return (
-    <div className="border border-zinc-800 rounded-lg p-4 bg-zinc-950/60">
-      <div className="text-sm text-zinc-400 mb-1">{label}</div>
-      <div className="text-xl font-semibold text-yellow-400">{value}</div>
+    <div className="border border-zinc-800 rounded p-3 bg-zinc-950/60">
+      <div className="text-xs text-zinc-400">{label}</div>
+      <div className="text-xl font-semibold">{Number(value).toLocaleString()} CFA</div>
     </div>
   );
 }

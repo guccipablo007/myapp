@@ -1,130 +1,293 @@
 'use client';
-import { useEffect, useState } from 'react';
+
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 
-export default function MemberProfile() {
+type Member = {
+  id: number;
+  full_name: string;
+  email?: string | null;
+  role?: 'sysadmin' | 'secretary' | 'member' | null;
+  status?: 'active' | 'suspended' | null;
+  joined_at?: string | null;
+};
+
+type Fine = {
+  id: number;
+  issued_at?: string | null;  // your fines table uses issued_at
+  reason?: string | null;
+  amount: number;
+  status: 'paid' | 'unpaid';
+};
+
+type Loan = {
+  id: number;
+  description?: string | null;
+  principal: number;          // your loans table uses principal
+  status: 'active' | 'repaid';
+  issued_on?: string | null;
+};
+
+type FinanceView = {
+  member_id: number;
+  full_name: string;
+  fines_paid: number;
+  fines_unpaid: number;
+  loans_issued: number;
+  loans_repaid: number;
+};
+
+export default function MemberProfilePage() {
+  const { id } = useParams<{ id: string }>();
+  const mid = Number(id);
   const sb = supabase();
-  const { id } = useParams() as { id: string };
-  const [member, setMember] = useState<any>(null);
+
   const [activeTab, setActiveTab] = useState<'overview' | 'fines' | 'loans'>('overview');
-  const [fines, setFines] = useState<any[]>([]);
-  const [loans, setLoans] = useState<any[]>([]);
+
+  const [member, setMember] = useState<Member | null>(null);
+  const [view, setView] = useState<FinanceView | null>(null);
+  const [fines, setFines] = useState<Fine[]>([]);
+  const [loans, setLoans] = useState<Loan[]>([]);
+  const [role, setRole] = useState<'sysadmin' | 'secretary' | 'member' | 'unknown'>('unknown');
   const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => {
-    (async () => {
-      const { data, error } = await sb.from('members').select('*').eq('id', id).maybeSingle();
-      if (error) setErr(error.message);
-      else setMember(data);
+  // Load current user's app role
+  async function loadRole() {
+    const { data } = await sb.auth.getSession();
+    const uid = data.session?.user?.id;
+    if (!uid) return setRole('member');
 
-      const { data: tx } = await sb.from('transactions').select('*').eq('member_id', id);
-      setFines(tx?.filter((t) => t.kind === 'fine') ?? []);
-      setLoans(tx?.filter((t) => ['loan', 'repayment'].includes(t.kind)) ?? []);
-    })();
+    const { data: up } = await sb
+      .from('user_profiles')
+      .select('role')
+      .eq('user_id', uid)
+      .maybeSingle();
+
+    setRole(((up?.role as any) ?? 'member'));
+  }
+
+  async function load() {
+    setErr(null);
+
+    const [
+      { data: m, error: em },
+      { data: vw, error: ev },
+      { data: fs, error: ef },
+      { data: ls, error: el },
+    ] = await Promise.all([
+      sb.from('members').select('*').eq('id', mid).maybeSingle(),
+      // <- use the view we just created
+      sb.from('v_member_finance_summary').select('*').eq('member_id', mid).maybeSingle(),
+      sb.from('fines').select('*').eq('member_id', mid).order('issued_at', { ascending: false }),
+      sb.from('loans').select('*').eq('member_id', mid).order('issued_on', { ascending: false }),
+    ]);
+
+    if (em) setErr(em.message);
+    if (ev) setErr(ev.message);
+    if (ef) setErr(ef.message);
+    if (el) setErr(el.message);
+
+    setMember(m as any);
+    setView((vw as any) ?? null);
+    setFines((fs ?? []) as Fine[]);
+    setLoans((ls ?? []) as Loan[]);
+  }
+
+  useEffect(() => {
+    loadRole();
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  if (err) return <p className="p-4 text-red-500">Error: {err}</p>;
-  if (!member) return <p className="p-4">Loading…</p>;
+  // Fallback client computations if view is absent
+  const fallback = useMemo(() => {
+    const fines_paid = fines.filter(f => f.status === 'paid').reduce((t, f) => t + Number(f.amount || 0), 0);
+    const fines_unpaid = fines.filter(f => f.status !== 'paid').reduce((t, f) => t + Number(f.amount || 0), 0);
+    const loans_issued = loans.reduce((t, l) => t + Number(l.principal || 0), 0);
+    const loans_repaid = loans.filter(l => l.status === 'repaid').reduce((t, l) => t + Number(l.principal || 0), 0);
+    return { fines_paid, fines_unpaid, loans_issued, loans_repaid };
+  }, [fines, loans]);
+
+  const totals = useMemo(() => {
+    const base = view ?? {
+      fines_paid: fallback.fines_paid,
+      fines_unpaid: fallback.fines_unpaid,
+      loans_issued: fallback.loans_issued,
+      loans_repaid: fallback.loans_repaid,
+    };
+    const outstanding = Math.max(base.loans_issued - base.loans_repaid, 0);
+    return { ...base, outstanding };
+  }, [view, fallback]);
+
+  async function recordRepayment(loanId: number) {
+    if (!(role === 'sysadmin' || role === 'secretary')) {
+      alert('Only sysadmin or secretary can record repayments.');
+      return;
+    }
+    const amountStr = prompt('Enter repayment amount (CFA):');
+    if (!amountStr) return;
+    const amount = Number(amountStr);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      alert('Invalid amount.');
+      return;
+    }
+
+    // Insert to loan_repayments if you created it
+    const { error: er } = await sb.from('loan_repayments').insert({ loan_id: loanId, amount });
+    if (er) return alert(er.message);
+
+    // Optionally mark repaid (manual choice)
+    const mark = confirm('Mark this loan as fully repaid now?');
+    if (mark) {
+      const { error: eu } = await sb.from('loans').update({ status: 'repaid' }).eq('id', loanId);
+      if (eu) return alert(eu.message);
+    }
+
+    await load();
+    alert('Repayment recorded.');
+  }
 
   return (
-    <main className="pt-6 max-w-5xl mx-auto">
-      <div className="border border-zinc-800 rounded-lg p-6 flex flex-col md:flex-row gap-4 items-center md:items-start">
-        <img src={member.avatar_url || '/avatar.png'} className="w-24 h-24 rounded-full border border-zinc-700" />
+    <main className="pt-6 max-w-6xl mx-auto">
+      {/* Header */}
+      <div className="border border-zinc-800 rounded-lg p-4 bg-zinc-950/60 flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold">{member.full_name}</h1>
-          <p className="text-zinc-400">{member.email}</p>
-          <div className="flex gap-2 mt-2">
-            <span className="border border-zinc-700 rounded px-2 py-0.5 text-xs">{member.role || 'member'}</span>
-            <span className={`border rounded px-2 py-0.5 text-xs ${
-              member.status === 'active' ? 'border-emerald-600 text-emerald-400' : 'border-zinc-600 text-zinc-400'
-            }`}>{member.status ?? 'active'}</span>
+          <div className="text-2xl font-bold">{member?.full_name ?? 'Member'}</div>
+          <div className="text-sm text-zinc-400">{member?.email ?? '—'}</div>
+          <div className="mt-1 text-xs">
+            <span className="px-2 py-0.5 rounded border border-zinc-700 mr-2">
+              {member?.role ?? 'member'}
+            </span>
+            <span className="px-2 py-0.5 rounded border border-zinc-700">
+              {member?.status ?? 'active'}
+            </span>
           </div>
-          <p className="text-xs text-zinc-500 mt-1">Joined: {member.joined_date || '—'}</p>
+          <div className="text-xs text-zinc-500 mt-1">
+            Joined: {member?.joined_at ?? '—'}
+          </div>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="mt-6 border-b border-zinc-800 flex gap-6 text-sm">
-        {['overview', 'fines', 'loans'].map(tab => (
+      <div className="mt-4 border-b border-zinc-800 flex gap-6 text-sm">
+        {(['overview', 'fines', 'loans'] as const).map(t => (
           <button
-            key={tab}
-            onClick={() => setActiveTab(tab as any)}
+            key={t}
+            onClick={() => setActiveTab(t)}
             className={`pb-2 border-b-2 ${
-              activeTab === tab ? 'border-yellow-400 text-yellow-400' : 'border-transparent text-zinc-400 hover:text-yellow-300'
+              activeTab === t
+                ? 'border-yellow-400 text-yellow-400'
+                : 'border-transparent text-zinc-400 hover:text-yellow-300'
             } capitalize`}
           >
-            {tab}
+            {t}
           </button>
         ))}
       </div>
 
-      {/* Tab content */}
+      {/* Panels */}
       <div className="mt-4">
         {activeTab === 'overview' && (
-          <div className="grid md:grid-cols-2 gap-4 text-sm">
-            <div className="border border-zinc-800 rounded-lg p-4">
-              <p><strong>Full Name:</strong> {member.full_name}</p>
-              <p><strong>Email:</strong> {member.email || '—'}</p>
-              <p><strong>Phone:</strong> {member.phone || '—'}</p>
-              <p><strong>Role:</strong> {member.role || 'member'}</p>
-              <p><strong>Status:</strong> {member.status || 'active'}</p>
-              <p><strong>Joined:</strong> {member.joined_date || '—'}</p>
-            </div>
-          </div>
+          <section className="grid md:grid-cols-3 gap-3">
+            <SummaryCard label="Fines Paid" value={`${totals.fines_paid.toLocaleString()} CFA`} />
+            <SummaryCard label="Fines Unpaid" value={`${totals.fines_unpaid.toLocaleString()} CFA`} />
+            <SummaryCard label="Loans Outstanding" value={`${totals.outstanding.toLocaleString()} CFA`} />
+          </section>
         )}
 
         {activeTab === 'fines' && (
-          <div>
-            <h2 className="font-semibold mb-2">Fines History</h2>
-            {fines.length === 0 ? (
-              <p className="text-zinc-400 text-sm">No fines recorded.</p>
-            ) : (
-              <table className="w-full border border-zinc-800 rounded-lg text-sm">
-                <thead className="bg-zinc-950/60 border-b border-zinc-800">
-                  <tr><th className="text-left px-3 py-2">Date</th><th>Reason</th><th>Status</th><th>Amount</th></tr>
-                </thead>
-                <tbody>
-                  {fines.map(f => (
-                    <tr key={f.id} className="border-t border-zinc-800 hover:bg-yellow-500/5">
-                      <td className="px-3 py-2">{f.date}</td>
-                      <td>{f.description}</td>
-                      <td>{f.status}</td>
-                      <td>{f.amount}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+          <div className="overflow-x-auto border border-zinc-800 rounded-lg">
+            <table className="w-full text-sm">
+              <thead className="bg-zinc-950/60 border-b border-zinc-800">
+                <tr className="[&>th]:text-left [&>th]:px-3 [&>th]:py-2">
+                  <th>Date</th>
+                  <th>Reason</th>
+                  <th>Status</th>
+                  <th>Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {fines.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-3 py-3">
+                      No fines
+                    </td>
+                  </tr>
+                )}
+                {fines.map(f => (
+                  <tr key={f.id} className="border-t border-zinc-800">
+                    <td className="px-3 py-2">{f.issued_at ?? '—'}</td>
+                    <td className="px-3 py-2">{f.reason ?? '—'}</td>
+                    <td className="px-3 py-2 capitalize">{f.status}</td>
+                    <td className="px-3 py-2">{Number(f.amount).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
 
         {activeTab === 'loans' && (
-          <div>
-            <h2 className="font-semibold mb-2">Loans & Repayments</h2>
-            {loans.length === 0 ? (
-              <p className="text-zinc-400 text-sm">No loans recorded.</p>
-            ) : (
-              <table className="w-full border border-zinc-800 rounded-lg text-sm">
+          <div className="space-y-3">
+            <div className="grid md:grid-cols-3 gap-3">
+              <SummaryCard label="Loans Issued" value={`${(view?.loans_issued ?? fallback.loans_issued).toLocaleString()} CFA`} />
+              <SummaryCard label="Loans Repaid" value={`${(view?.loans_repaid ?? fallback.loans_repaid).toLocaleString()} CFA`} />
+              <SummaryCard label="Outstanding" value={`${totals.outstanding.toLocaleString()} CFA`} />
+            </div>
+
+            <div className="overflow-x-auto border border-zinc-800 rounded-lg">
+              <table className="w-full text-sm">
                 <thead className="bg-zinc-950/60 border-b border-zinc-800">
-                  <tr><th className="text-left px-3 py-2">Date</th><th>Description</th><th>Kind</th><th>Status</th><th>Amount</th></tr>
+                  <tr className="[&>th]:text-left [&>th]:px-3 [&>th]:py-2">
+                    <th>Issued On</th>
+                    <th>Description</th>
+                    <th>Status</th>
+                    <th>Amount</th>
+                    <th>Actions</th>
+                  </tr>
                 </thead>
                 <tbody>
+                  {loans.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-3 py-3">
+                        No loans
+                      </td>
+                    </tr>
+                  )}
                   {loans.map(l => (
-                    <tr key={l.id} className="border-t border-zinc-800 hover:bg-yellow-500/5">
-                      <td className="px-3 py-2">{l.date}</td>
-                      <td>{l.description}</td>
-                      <td>{l.kind}</td>
-                      <td>{l.status}</td>
-                      <td>{l.amount}</td>
+                    <tr key={l.id} className="border-t border-zinc-800">
+                      <td className="px-3 py-2">{l.issued_on ?? '—'}</td>
+                      <td className="px-3 py-2">{l.description ?? '—'}</td>
+                      <td className="px-3 py-2 capitalize">{l.status}</td>
+                      <td className="px-3 py-2">{Number(l.principal).toLocaleString()}</td>
+                      <td className="px-3 py-2">
+                        <button
+                          onClick={() => recordRepayment(l.id)}
+                          className="px-2 py-1 rounded border border-zinc-700 hover:bg-yellow-500/10"
+                        >
+                          Record Repayment
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            )}
+            </div>
           </div>
         )}
       </div>
+
+      {err && <p className="mt-4 text-sm text-red-400">Error: {err}</p>}
     </main>
+  );
+}
+
+function SummaryCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="border border-zinc-800 rounded p-3 bg-zinc-950/60">
+      <div className="text-xs text-zinc-400">{label}</div>
+      <div className="text-xl font-semibold">{value}</div>
+    </div>
   );
 }
