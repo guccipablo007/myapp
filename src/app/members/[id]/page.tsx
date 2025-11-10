@@ -1,17 +1,23 @@
 // src/app/members/[id]/page.tsx
 import Link from "next/link";
-import { notFound } from "next/navigation";
 import { supabase as supabaseMaybe } from "@/lib/supabase";
-import EditMemberPanel from "./EditMemberPanel";
+import ClientAvatar from "../ClientAvatar";
 
+// Support both shapes of your supabase export (factory or client object)
 function sb() {
-  // @ts-expect-error – tolerate factory or client
-  return typeof supabaseMaybe === "function" ? supabaseMaybe() : supabaseMaybe;
+  // @ts-expect-error tolerate either a function or a client object
+  const s = typeof supabaseMaybe === "function" ? supabaseMaybe() : supabaseMaybe;
+  return s;
 }
 
-type Member = {
-  id: string;                 // bigint in DB, we read as string
-  user_id: string | null;     // uuid (auth user)
+export const revalidate = 0;
+
+type MemberPageProps = {
+  params: { id: string };
+};
+
+type MemberRow = {
+  id: string;
   full_name: string | null;
   email: string | null;
   role: string | null;
@@ -19,36 +25,16 @@ type Member = {
   created_at: string | null;
 };
 
-export const revalidate = 0;
-
-export default async function MemberProfilePage({
-  params,
-}: { params: { id?: string } }) {
+export default async function MemberDetailPage({ params }: MemberPageProps) {
   const s = sb();
+  const id = params.id;
 
-  // --------- Guard: reject missing/undefined ----------
-  const slug = (params.id ?? "").trim();
-  if (!slug || slug.toLowerCase() === "undefined" || slug.toLowerCase() === "null") {
-    notFound();
-  }
-
-  // Detect if slug is a UUID (user_id) or a numeric id
-  const UUID_RE =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-  const isUuid = UUID_RE.test(slug);
-  const column = isUuid ? "user_id" : "id";
-
-  // For numeric id, also make sure it's digits only; if not, 404
-  if (!isUuid && !/^[0-9]+$/.test(slug)) {
-    notFound();
-  }
-
-  // --------- Load the member using the appropriate column ----------
-  const { data: rows, error } = await s
+  // fetch member
+  const { data, error } = await s
     .from("members")
-    .select("id,user_id,full_name,email,role,status,created_at")
-    .eq(column, slug) // string is fine for both bigint and uuid here
-    .limit(1);
+    .select("id, full_name, email, role, status, created_at")
+    .eq("id", id)
+    .single();
 
   if (error) {
     return (
@@ -59,101 +45,100 @@ export default async function MemberProfilePage({
     );
   }
 
-  const member = (rows?.[0] ?? null) as Member | null;
-  if (!member) notFound();
+  const m = (data ?? {}) as MemberRow;
 
-  // --------- Viewer permissions (isSelf / canAdmin) ----------
-  const { data: auth } = await s.auth.getUser();
-  const viewerUid = auth?.user?.id ?? null;
-
-  let canAdmin = false;
-  let isSelf = false;
-  if (viewerUid) {
-    isSelf = member.user_id === viewerUid;
-    const { data: meRow } = await s
-      .from("members")
-      .select("role,user_id")
-      .eq("user_id", viewerUid)
-      .limit(1)
-      .maybeSingle();
-    const viewerRole = (meRow?.role ?? "member").toLowerCase();
-    canAdmin = ["sysadmin", "secretary"].includes(viewerRole);
-  }
-
-  // --------- Avatar candidates (no DB column required) ----------
+  // Build possible public avatar URLs from the avatars bucket
   const storage = s.storage.from("avatars");
-  const candidates: string[] = [];
-  if (member.user_id) {
-    for (const ext of ["png", "jpg", "jpeg", "webp"]) {
-      const { data: pub } = storage.getPublicUrl(`${member.user_id}.${ext}`);
-      if (pub?.publicUrl) candidates.push(pub.publicUrl);
-    }
+  const exts = ["png", "jpg", "jpeg", "webp"] as const;
+  const avatarCandidates: string[] = [];
+  for (const ext of exts) {
+    const path = `${m.id}.${ext}`;
+    const { data: pub } = storage.getPublicUrl(path);
+    if (pub?.publicUrl) avatarCandidates.push(pub.publicUrl);
   }
 
-  const joinedTxt = member.created_at
-    ? new Date(member.created_at).toLocaleDateString()
-    : "—";
+  const joined = m.created_at ? new Date(m.created_at).toLocaleDateString() : "—";
+  const name = m.full_name ?? "—";
+  const email = m.email ?? "—";
+  const role = m.role ?? "member";
+  const status = (m.status ?? "active").toLowerCase();
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="text-3xl font-semibold">{member.full_name ?? "—"}</div>
-          <div className="mt-1 text-neutral-400">{member.email ?? "—"}</div>
-          <div className="mt-2 flex items-center gap-2">
-            <Badge>{(member.role ?? "member").toUpperCase()}</Badge>
-            <Badge
-              className={
-                (member.status ?? "active").toLowerCase() === "active"
-                  ? "border-emerald-600 text-emerald-400"
-                  : "border-neutral-600 text-neutral-400"
-              }
-            >
-              {(member.status ?? "active").toUpperCase()}
-            </Badge>
-            <span className="text-sm text-neutral-500">Joined: {joinedTxt}</span>
-          </div>
-        </div>
+      {/* Header strip */}
+      <div className="flex items-center justify-between">
+        <Link
+          href="/members"
+          className="rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800 text-sm"
+        >
+          ← Back
+        </Link>
 
-        {(isSelf || canAdmin) && (
-          <a
-            href="#edit-panel"
-            className="rounded-lg bg-amber-500/90 hover:bg-amber-500 text-black px-4 py-2 text-sm font-medium"
+        <div className="flex items-center gap-2">
+          <Link
+            href={`/members/${m.id}/edit`}
+            className="rounded-lg bg-amber-500/90 hover:bg-amber-500 px-4 py-2 text-sm font-medium text-black"
           >
             Edit profile
-          </a>
-        )}
+          </Link>
+        </div>
       </div>
 
-      {(isSelf || canAdmin) && (
-        <EditMemberPanel
-          id="edit-panel"
-          member={member}
-          avatarCandidates={candidates}
-          canAdmin={canAdmin}
-          isSelf={isSelf}
-        />
-      )}
+      {/* Profile header */}
+      <div className="rounded-2xl border border-neutral-800 p-5 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <ClientAvatar candidates={avatarCandidates} fallbackName={name} size={64} />
+          <div>
+            <div className="flex items-center gap-3">
+              <h1 className="text-xl font-semibold">{name}</h1>
+              <span className="rounded-full border border-neutral-700 px-2 py-0.5 text-xs uppercase tracking-wide">
+                {role}
+              </span>
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs uppercase tracking-wide border ${
+                  status === "active"
+                    ? "border-emerald-600 text-emerald-400"
+                    : "border-neutral-600 text-neutral-400"
+                }`}
+              >
+                {status}
+              </span>
+            </div>
+            <div className="text-sm text-neutral-400">{email}</div>
+            <div className="text-xs text-neutral-500">Joined: {joined}</div>
+          </div>
+        </div>
+      </div>
 
-      <div className="flex gap-2">
-        <Link className="btn-tab" href={`/members/${member.id}`}>Overview</Link>
-        <Link className="btn-tab" href={`/members/${member.id}?t=fines`}>Fines</Link>
-        <Link className="btn-tab" href={`/members/${member.id}?t=loans`}>Loans</Link>
-        <Link className="btn-tab" href={`/members/${member.id}?t=attendance`}>Attendance</Link>
+      {/* Simple overview cards (extend as needed) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="rounded-2xl border border-neutral-800 p-4">
+          <div className="text-sm text-neutral-400 mb-1">Overview</div>
+          <div className="text-xs text-neutral-500">
+            Member ID: <code>{m.id}</code>
+          </div>
+          <div className="text-xs text-neutral-500">Role: {role}</div>
+          <div className="text-xs text-neutral-500">Status: {status}</div>
+        </div>
+
+        <div className="rounded-2xl border border-neutral-800 p-4">
+          <div className="text-sm text-neutral-400 mb-1">Actions</div>
+          <div className="flex gap-2">
+            <Link
+              href={`/finances?member=${encodeURIComponent(m.id)}`}
+              className="rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800 text-sm"
+            >
+              Open finances
+            </Link>
+            <Link
+              href={`/members/${m.id}/edit`}
+              className="rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800 text-sm"
+            >
+              Edit profile
+            </Link>
+          </div>
+        </div>
       </div>
     </div>
-  );
-}
-
-function Badge({
-  children,
-  className = "",
-}: { children: React.ReactNode; className?: string }) {
-  return (
-    <span
-      className={`inline-flex items-center rounded-full border border-neutral-700 px-2 py-0.5 text-xs tracking-wide ${className}`}
-    >
-      {children}
-    </span>
   );
 }
