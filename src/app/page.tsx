@@ -1,223 +1,145 @@
 // src/app/page.tsx
-import Link from "next/link";
-import KpiCard from "@/components/KpiCard";
-import AdminInsights from "@/components/AdminInsights";
-import GlobalSearch from "@/components/GlobalSearch";
-import { formatNumber, formatCurrency } from "@/lib/format";
-import { supabase as supabaseMaybe } from "@/lib/supabase";
-import { getCurrentUserRole } from "@/lib/userRole";
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+export const fetchCache = 'force-no-store';
 
-/** Support both shapes: exported client or factory function */
+import { unstable_noStore as noStore } from 'next/cache';
+import Link from 'next/link';
+import { supabase as supabaseMaybe } from '@/lib/supabase';
+
+/** Tolerate both supabase client or factory exports */
 function sb() {
-  // @ts-ignore – tolerate either shape
-  return typeof supabaseMaybe === "function" ? supabaseMaybe() : supabaseMaybe;
-}
-
-type Counts = {
-  announcements: number;
-  activeMembers: number;
-  outstandingDues: number;
-  latestAnnouncement?: { id: number; title: string; created_at: string } | null;
-  nextMeeting?: { id: number; title: string; scheduled_for: string } | null;
-};
-
-async function getDashboardCounts(): Promise<Counts> {
-  const supabase = sb();
-
-  // ---- Announcements count + latest
-  let announcements = 0;
-  let latestAnnouncement: Counts["latestAnnouncement"] = null;
-  try {
-    const { data, error, count } = await supabase
-      .from("announcements")
-      .select("id,title,created_at", { count: "exact" })
-      .order("created_at", { ascending: false })
-      .limit(1);
-    if (!error) {
-      announcements = count ?? 0;
-      latestAnnouncement = data?.[0] ?? null;
-    }
-  } catch {}
-
-  // ---- Active members
-  let activeMembers = 0;
-  try {
-    const { count, error } = await supabase
-      .from("members")
-      .select("*", { count: "exact", head: true })
-      .eq("status", "active");
-    if (!error) activeMembers = count ?? 0;
-  } catch {}
-
-  // ---- Outstanding dues = unpaid fines + outstanding loans
-  let unpaidFines = 0;
-  try {
-    const { data, error } = await supabase
-      .from("fines")
-      .select("amount,status")
-      .eq("status", "unpaid");
-    if (!error && data) {
-      unpaidFines = data.reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0);
-    }
-  } catch {}
-
-  let outstandingLoans = 0;
-  try {
-    const { data, error } = await supabase
-      .from("loans")
-      .select("amount_issued,amount_repaid");
-    if (!error && data) {
-      outstandingLoans = data.reduce((sum: number, row: any) => {
-        const issued = Number(row.amount_issued || 0);
-        const repaid = Number(row.amount_repaid || 0);
-        const balance = Math.max(0, issued - repaid);
-        return sum + balance;
-      }, 0);
-    }
-  } catch {}
-
-  // ---- Next meeting (future soonest)
-  let nextMeeting: Counts["nextMeeting"] = null;
-  try {
-    const { data, error } = await supabase
-      .from("meetings")
-      .select("id,title,scheduled_for")
-      .gte("scheduled_for", new Date().toISOString())
-      .order("scheduled_for", { ascending: true })
-      .limit(1);
-    if (!error) nextMeeting = data?.[0] ?? null;
-  } catch {}
-
-  return {
-    announcements,
-    activeMembers,
-    outstandingDues: unpaidFines + outstandingLoans,
-    latestAnnouncement,
-    nextMeeting,
-  };
+  // @ts-expect-error handle both shapes
+  const s = typeof supabaseMaybe === 'function' ? supabaseMaybe() : supabaseMaybe;
+  return s;
 }
 
 export default async function DashboardPage() {
-  const [{ announcements, activeMembers, outstandingDues, latestAnnouncement, nextMeeting }, role] =
-    await Promise.all([getDashboardCounts(), getCurrentUserRole()]);
+  noStore(); // prevent Next.js from caching
 
-  const briefing = [
-    `${announcements} announcement${announcements === 1 ? "" : "s"} total`,
-    `${activeMembers} active member${activeMembers === 1 ? "" : "s"}`,
-    `Outstanding dues: ${formatCurrency(outstandingDues)}`,
-  ].join(" • ");
+  const s = sb();
+
+  // --- Fetch data for dashboard cards ---
+  const [{ data: members }, { data: announcements }, { data: fines }, { data: loans }] =
+    await Promise.all([
+      s.from('members').select('id, status').eq('status', 'active'),
+      s.from('announcements').select('id'),
+      s.from('fines').select('amount, status'),
+      s.from('loans').select('amount, status')
+    ]);
+
+  const activeMembers = members?.length ?? 0;
+  const totalAnnouncements = announcements?.length ?? 0;
+
+  // Compute outstanding dues (fines + active loans)
+  const finesDue =
+    fines?.filter((f) => f.status === 'unpaid').reduce((sum, f) => sum + (f.amount || 0), 0) || 0;
+  const loansDue =
+    loans?.filter((l) => l.status === 'active').reduce((sum, l) => sum + (l.amount || 0), 0) || 0;
+  const totalOutstanding = finesDue + loansDue;
 
   return (
-    <div className="space-y-6">
-      {/* Header with Global Search + quick links */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between gap-3">
-          <h1 className="text-2xl font-semibold">Welcome, Collins! 👋</h1>
-          <div className="w-full max-w-md">
-            <GlobalSearch />
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <Link href="/growth" className="text-sm rounded px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10">
-            Growth
+    <div className="p-6">
+      <h1 className="text-2xl font-semibold mb-4">Welcome, Collins! 👋</h1>
+
+      {/* Nav buttons */}
+      <div className="flex gap-2 mb-6">
+        {['Growth', 'Finances', 'Members', 'Meetings', 'Attachments'].map((tab) => (
+          <Link
+            key={tab}
+            href={`/${tab.toLowerCase()}`}
+            className="rounded-md bg-neutral-900/60 px-4 py-2 text-sm border border-neutral-800 hover:bg-neutral-800 transition-colors"
+          >
+            {tab}
           </Link>
-          <Link href="/finances" className="text-sm rounded px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10">
-            Finances
-          </Link>
-          <Link href="/members" className="text-sm rounded px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10">
-            Members
-          </Link>
-          <Link href="/meetings" className="text-sm rounded px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10">
-            Meetings
-          </Link>
-          <Link href="/attachments" className="text-sm rounded px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10">
-            Attachments
-          </Link>
-        </div>
+        ))}
       </div>
 
-      {/* KPI row */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <KpiCard
-          label="Announcements"
-          value={formatNumber(announcements)}
-          hint="Total announcements posted"
-          href="/meetings"
-          tooltip="Count of rows in announcements table."
+      {/* Main cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <Card
+          title="Announcements"
+          value={totalAnnouncements}
+          subtitle="Total announcements posted"
+          link="/notifications"
         />
-        <KpiCard
-          label="Active Members"
-          value={formatNumber(activeMembers)}
-          hint="Current active members"
-          href="/members"
-          tooltip="members.status = 'active'."
+        <Card
+          title="Active Members"
+          value={activeMembers}
+          subtitle="Current active members"
+          link="/members"
         />
-        <KpiCard
-          label="Outstanding Dues"
-          value={formatCurrency(outstandingDues)}
-          hint="Unpaid fines + active loans"
-          href="/finances"
-          tooltip="Sum of unpaid fines + outstanding loans."
+        <Card
+          title="Outstanding Dues"
+          value={`FCFA ${totalOutstanding}`}
+          subtitle="Unpaid fines + active loans"
+          link="/finances"
         />
       </div>
 
-      {/* Briefing + Latest */}
+      {/* Briefing section */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="rounded-xl border border-white/10 bg-black/30 p-5">
-          <div className="flex items-center gap-2">
-            <span>🧠</span>
-            <h2 className="text-sm font-medium">Here’s your briefing</h2>
-          </div>
-          <p className="mt-2 text-sm text-white/80">{briefing}</p>
+        <div className="rounded-lg border border-neutral-800 p-4">
+          <h2 className="font-semibold mb-2">🧠 Here’s your briefing</h2>
+          <p className="text-sm text-neutral-400">
+            {totalAnnouncements} announcements total • {activeMembers} active members • Outstanding
+            dues: FCFA {totalOutstanding}
+          </p>
         </div>
 
-        <div className="rounded-xl border border-white/10 bg-black/30 p-5">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium">Latest Announcement</h2>
-            <Link href="/meetings" className="text-xs opacity-80 hover:opacity-100">
-              View
-            </Link>
-          </div>
-          {latestAnnouncement ? (
-            <div className="mt-2">
-              <p className="text-white/90">{latestAnnouncement.title}</p>
-              <p className="text-xs text-white/60">
-                {new Date(latestAnnouncement.created_at).toLocaleString()}
-              </p>
-            </div>
-          ) : (
-            <p className="mt-2 text-sm text-white/60">No announcements yet.</p>
-          )}
+        <div className="rounded-lg border border-neutral-800 p-4">
+          <h2 className="font-semibold mb-2">Latest Announcement</h2>
+          <p className="text-sm text-neutral-400">
+            {totalAnnouncements > 0 ? 'Check the latest updates in Notifications.' : 'No announcements yet.'}
+          </p>
+          <Link href="/notifications" className="text-xs text-amber-400 hover:underline">
+            View
+          </Link>
         </div>
-      </div>
 
-      {/* Next Meeting */}
-      <div className="rounded-xl border border-white/10 bg-black/30 p-5">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium">Next Meeting</h2>
-          <Link href="/meetings" className="text-xs opacity-80 hover:opacity-100">
+        <div className="rounded-lg border border-neutral-800 p-4 md:col-span-2">
+          <h2 className="font-semibold mb-2">Next Meeting</h2>
+          <p className="text-sm text-neutral-400">No upcoming meetings.</p>
+          <Link href="/meetings" className="text-xs text-amber-400 hover:underline">
             See all
           </Link>
         </div>
-        {nextMeeting ? (
-          <div className="mt-2">
-            <p className="text-white/90">{nextMeeting.title}</p>
-            <p className="text-xs text-white/60">
-              {new Date(nextMeeting.scheduled_for).toLocaleString()}
-            </p>
-          </div>
-        ) : (
-          <p className="mt-2 text-sm text-white/60">No upcoming meetings.</p>
-        )}
       </div>
 
-      {/* Admin Insights Section — gated by role */}
-      {(role === "sysadmin" || role === "secretary") ? <AdminInsights /> : null}
-
-      {/* Data sources note */}
-      <p className="text-[11px] text-white/40">
-        Data from: <code>announcements</code>, <code>members</code>, <code>fines</code>, <code>loans</code>, <code>meetings</code>.
+      <p className="mt-4 text-xs text-neutral-600">
+        Data from: announcements, members, fines, loans, meetings.
       </p>
+    </div>
+  );
+}
+
+/* ──────────────── Small helper Card component ──────────────── */
+function Card({
+  title,
+  value,
+  subtitle,
+  link
+}: {
+  title: string;
+  value: string | number;
+  subtitle: string;
+  link: string;
+}) {
+  return (
+    <div className="rounded-lg border border-neutral-800 p-5 flex flex-col justify-between bg-neutral-900/40">
+      <div>
+        <h3 className="font-semibold text-neutral-200 mb-1">{title}</h3>
+        <p className="text-neutral-400 text-sm">{subtitle}</p>
+      </div>
+      <div className="flex justify-between items-end mt-3">
+        <span className="text-2xl font-bold text-white">{value}</span>
+        <Link
+          href={link}
+          className="text-xs border border-neutral-700 rounded-md px-2 py-1 hover:bg-neutral-800"
+        >
+          View details
+        </Link>
+      </div>
     </div>
   );
 }

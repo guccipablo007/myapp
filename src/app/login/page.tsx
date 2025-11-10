@@ -1,59 +1,76 @@
-'use client';
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabase';
-import { ensureUserProfile } from '@/lib/auth-helpers'; // we made this earlier
+"use client";
+
+import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { supabase as supabaseMaybe } from "@/lib/supabase";
+
+function sb() {
+  // @ts-expect-error tolerate factory/client
+  return typeof supabaseMaybe === "function" ? supabaseMaybe() : supabaseMaybe;
+}
 
 export default function LoginPage() {
-  const sb = supabase();
   const router = useRouter();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const sp = useSearchParams();
+  const redirectTo = sp.get("redirect") || "/";
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function onSubmit(e: React.FormEvent) {
+  const signIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    setErr(null); setBusy(true);
-
-    const { data, error } = await sb.auth.signInWithPassword({ email, password });
-    if (error) { setErr(error.message); setBusy(false); return; }
-
-    // make sure a user_profiles row exists
-    if (data.user) await ensureUserProfile(data.user.id, email.split('@')[0]);
-
-    router.push('/'); // go to dashboard/home
-    setBusy(false);
-  }
+    setErr(null);
+    setBusy(true);
+    try {
+      const s = sb();
+      const { error } = await s.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      router.replace(redirectTo);
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to sign in");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
-    <main className="min-h-dvh grid place-items-center p-4">
-      <form onSubmit={onSubmit} className="w-full max-w-sm border border-zinc-800 rounded-lg p-5 bg-zinc-950/60">
-        <h1 className="text-xl font-semibold mb-3">Sign in</h1>
-        <div className="space-y-2">
-          <input
-            className="w-full px-3 py-2 rounded border border-zinc-800 bg-zinc-900"
-            placeholder="Email" type="email" value={email}
-            onChange={(e)=>setEmail(e.target.value)}
-          />
-          <input
-            className="w-full px-3 py-2 rounded border border-zinc-800 bg-zinc-900"
-            placeholder="Password" type="password" value={password}
-            onChange={(e)=>setPassword(e.target.value)}
-          />
-          {err && <p className="text-sm text-red-400">{err}</p>}
-          <button disabled={busy}
-            className="w-full px-3 py-2 rounded border border-yellow-500/40 bg-yellow-500/20 hover:bg-yellow-500/30">
-            {busy ? 'Signing in…' : 'Sign in'}
-          </button>
-        </div>
-        <p className="text-sm text-zinc-400 mt-3">
-          No account? <a className="text-yellow-400" href="/signup">Create one</a>
+    <div className="min-h-screen grid place-items-center bg-[#0B0E16] text-white px-4">
+      <div className="w-full max-w-md rounded-2xl border border-neutral-800 p-6">
+        <h1 className="text-xl font-semibold mb-2">Sign in</h1>
+        <p className="text-sm text-neutral-400 mb-6">
+          Use your CAMSU account to continue.
         </p>
-      </form>
-    </main>
+        <form onSubmit={signIn} className="space-y-3">
+          <input
+            type="email"
+            className="w-full h-10 rounded-lg bg-neutral-900/60 border border-neutral-800 px-3 text-sm outline-none focus:border-neutral-600"
+            placeholder="Email"
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
+          <input
+            type="password"
+            className="w-full h-10 rounded-lg bg-neutral-900/60 border border-neutral-800 px-3 text-sm outline-none focus:border-neutral-600"
+            placeholder="Password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+          {err ? <div className="text-sm text-red-400">{err}</div> : null}
+          <button
+            type="submit"
+            disabled={busy}
+            className="w-full h-10 rounded-lg bg-amber-500/90 hover:bg-amber-500 text-black font-medium disabled:opacity-50"
+          >
+            {busy ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
+      </div>
+    </div>
   );
 }
-<p className="text-sm text-zinc-400 mt-3">
-  <a className="text-yellow-400" href="/forgot-password">Forgot password?</a>
-</p>

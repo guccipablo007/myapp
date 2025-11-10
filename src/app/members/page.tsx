@@ -1,224 +1,218 @@
 // src/app/members/page.tsx
-"use client";
-
-import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import IssueFineDialog from "@/components/IssueFineDialog";
 import { supabase as supabaseMaybe } from "@/lib/supabase";
+import ClientAvatar from "./ClientAvatar";
 
+/** Always render dynamically & bypass caches (Vercel) */
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
+
+/** Support both shapes of your supabase export (factory or already-made client). */
 function sb() {
-  const maybe: any = supabaseMaybe as any;
-  return typeof maybe === "function" ? maybe() : maybe;
+  // @ts-expect-error tolerate either a function or a client object
+  const s = typeof supabaseMaybe === "function" ? supabaseMaybe() : supabaseMaybe;
+  return s;
 }
 
-type Member = {
-  id: number;
+type MemberRow = {
+  id: string;
   full_name: string | null;
-  email?: string | null;
-  role?: string | null;
-  status?: string | null;
-  joined?: string | null;
-  created_at?: string | null;
-  avatar_url?: string | null;
+  email: string | null;
+  role: string | null;
+  status: string | null;
+  created_at: string | null; // displayed as "Joined"
 };
 
-export default function MembersPage() {
-  const [rows, setRows] = useState<Member[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
+export default async function MembersPage() {
+  const s = sb();
 
-  const [q, setQ] = useState("");
-  const [filter, setFilter] = useState<"all" | "active" | "inactive" | "admin">("all");
+  // Select only safe, known columns
+  const { data, error } = await s
+    .from("members")
+    .select("id, full_name, email, role, status, created_at")
+    .order("full_name", { ascending: true });
 
-  // dialog state
-  const [fineOpen, setFineOpen] = useState(false);
-  const [fineMemberId, setFineMemberId] = useState<number | null>(null);
-  const [fineMemberName, setFineMemberName] = useState<string | null>(null);
-
-  async function load() {
-    setLoading(true);
-    setErr(null);
-    try {
-      const s = sb();
-      // keep columns flexible to your schema
-      const { data, error } = await s
-        .from("members")
-        .select("id, full_name, email, role, status, joined, created_at, avatar_url")
-        .order("id", { ascending: true })
-        .limit(500);
-      if (error) throw error;
-      setRows((data ?? []) as Member[]);
-    } catch (e: any) {
-      setErr(e?.message || "Failed to load members");
-    } finally {
-      setLoading(false);
-    }
+  if (error) {
+    return (
+      <div className="p-6">
+        <h1 className="text-2xl font-semibold mb-2">Members Directory</h1>
+        <p className="text-red-400">Error: {error.message}</p>
+      </div>
+    );
   }
 
-  useEffect(() => {
-    load();
-  }, []);
+  const members = (data ?? []) as MemberRow[];
 
-  const filtered = useMemo(() => {
-    let r = [...rows];
-    if (filter === "active") r = r.filter((x) => (x.status ?? "").toLowerCase() === "active");
-    if (filter === "inactive") r = r.filter((x) => (x.status ?? "").toLowerCase() !== "active");
-    if (filter === "admin") r = r.filter((x) => ["sysadmin", "secretary"].includes((x.role ?? "").toLowerCase()));
-    const s = q.trim().toLowerCase();
-    if (!s) return r;
-    return r.filter((x) =>
-      [
-        x.full_name ?? "",
-        x.email ?? "",
-        x.role ?? "",
-        x.status ?? "",
-        x.id?.toString() ?? "",
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(s)
-    );
-  }, [rows, filter, q]);
+  // Build storage public URL candidates for each member avatar
+  const storage = s.storage.from("avatars");
+  const exts = ["png", "jpg", "jpeg", "webp"] as const;
+  const avatarUrlsById = new Map<string, string[]>();
 
-  function openIssueFine(member: Member) {
-    setFineMemberId(member.id);
-    setFineMemberName(member.full_name || `#${member.id}`);
-    setFineOpen(true);
+  for (const m of members) {
+    const candidates: string[] = [];
+    for (const ext of exts) {
+      const path = `${m.id}.${ext}`;
+      // If the file doesn’t exist, Supabase still returns a public URL. ClientAvatar
+      // will 404-fallback to initials automatically.
+      const { data: pub } = storage.getPublicUrl(path);
+      if (pub?.publicUrl) candidates.push(pub.publicUrl);
+    }
+    avatarUrlsById.set(m.id, candidates);
   }
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="p-6">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3 mb-6">
         <div>
-          <h1 className="text-xl font-semibold">Members Directory</h1>
-          <p className="text-sm text-white/60">Manage members, roles, and actions.</p>
+          <h1 className="text-2xl font-semibold">Members Directory</h1>
+          <p className="text-sm text-neutral-400">Manage members, roles, and actions.</p>
         </div>
+
         <div className="flex items-center gap-2">
+          {/* Visual only (server component) – wire up later with a client filter if desired */}
           <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
+            className="h-10 w-56 rounded-lg bg-neutral-900/60 border border-neutral-800 px-3 text-sm outline-none focus:border-neutral-600"
             placeholder="Search members…"
-            className="bg-transparent border border-white/10 rounded px-2 py-1 text-sm outline-none placeholder:text-white/40"
           />
           <select
-            value={filter}
-            onChange={(e) => setFilter(e.target.value as any)}
-            className="bg-transparent border border-white/10 rounded px-2 py-1 text-sm"
-            title="Filter"
+            className="h-10 rounded-lg bg-neutral-900/60 border border-neutral-800 px-3 text-sm outline-none focus:border-neutral-600"
+            defaultValue="all"
           >
             <option value="all">All</option>
             <option value="active">Active</option>
             <option value="inactive">Inactive</option>
-            <option value="admin">Admins</option>
           </select>
           <Link
             href="/finances"
-            className="rounded border border-yellow-500/40 text-yellow-300 hover:bg-yellow-500/10 px-3 py-1.5 text-sm"
-            title="Go to Finances"
+            className="h-10 inline-flex items-center rounded-lg bg-amber-500/90 hover:bg-amber-500 px-4 text-sm font-medium text-black"
           >
             Open Finances
           </Link>
         </div>
       </div>
 
-      <div className="rounded-xl border border-white/10 overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="text-left text-white/60 bg-white/5">
+      {/* Table */}
+      <div className="overflow-x-auto rounded-xl border border-neutral-800">
+        <table className="min-w-full text-sm">
+          <thead className="bg-neutral-900/60 text-neutral-300">
             <tr>
-              <th className="py-2 px-4">Avatar</th>
-              <th className="py-2 px-4">Name</th>
-              <th className="py-2 px-4">Email</th>
-              <th className="py-2 px-4">Role</th>
-              <th className="py-2 px-4">Status</th>
-              <th className="py-2 px-4">Joined</th>
-              <th className="py-2 px-4 text-right">Actions</th>
+              <Th className="w-16">Avatar</Th>
+              <Th>Name</Th>
+              <Th>Email</Th>
+              <Th>Role</Th>
+              <Th>Status</Th>
+              <Th>Joined</Th>
+              <Th className="w-40 text-right">Actions</Th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-white/10">
-            {filtered.length === 0 && !loading && !err && (
+          <tbody>
+            {members.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-4 px-4 text-white/60">
+                <td colSpan={7} className="py-10 text-center text-neutral-500">
                   No members found.
                 </td>
               </tr>
-            )}
-            {filtered.map((m) => {
-              const joined =
-                m.joined || m.created_at
-                  ? new Date(m.joined || (m.created_at as string)).toLocaleDateString()
+            ) : (
+              members.map((m) => {
+                const joined = m.created_at
+                  ? new Date(m.created_at).toLocaleDateString()
                   : "—";
-              const role = (m.role ?? "member").toString();
-              const status = (m.status ?? "active").toString();
-              const roleChip =
-                role.toLowerCase() === "sysadmin"
-                  ? "border-purple-400/40 text-purple-200 bg-purple-400/10"
-                  : role.toLowerCase() === "secretary"
-                  ? "border-blue-400/40 text-blue-200 bg-blue-400/10"
-                  : "border-white/15 text-white/70";
+                const name = m.full_name ?? "—";
+                const email = m.email ?? "—";
+                const role = (m.role ?? "member").toLowerCase();
+                const status = (m.status ?? "active").toLowerCase();
+                const candidates = avatarUrlsById.get(m.id) ?? [];
 
-              const statChip =
-                status.toLowerCase() === "active"
-                  ? "border-green-500/40 text-green-200 bg-green-500/10"
-                  : "border-yellow-500/40 text-yellow-200 bg-yellow-500/10";
-
-              return (
-                <tr key={m.id} className="hover:bg-white/5">
-                  <td className="py-2 px-4">
-                    <div className="h-8 w-8 rounded-full bg-white/10 overflow-hidden grid place-items-center">
-                      {m.avatar_url ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={m.avatar_url} alt="" className="h-8 w-8 object-cover" />
-                      ) : (
-                        <span className="text-xs opacity-70">👤</span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="py-2 px-4">{m.full_name || `Member #${m.id}`}</td>
-                  <td className="py-2 px-4">{m.email || "—"}</td>
-                  <td className="py-2 px-4">
-                    <span className={`rounded-full px-2 py-0.5 text-xs border ${roleChip}`}>{role}</span>
-                  </td>
-                  <td className="py-2 px-4">
-                    <span className={`rounded-full px-2 py-0.5 text-xs border ${statChip}`}>{status}</span>
-                  </td>
-                  <td className="py-2 px-4">{joined}</td>
-                  <td className="py-2 px-4">
-                    <div className="flex items-center justify-end gap-2">
-                      <Link
-                        href={`/members/${m.id}`}
-                        className="rounded border border-white/10 px-2 py-1 text-xs hover:bg-white/10"
-                        title="View"
+                return (
+                  <tr
+                    key={m.id}
+                    className="border-t border-neutral-800 hover:bg-neutral-900/40"
+                  >
+                    <Td>
+                      <ClientAvatar
+                        candidates={candidates}
+                        fallbackName={name}
+                        size={36}
+                      />
+                    </Td>
+                    <Td className="font-medium">{name}</Td>
+                    <Td className="text-neutral-300">{email}</Td>
+                    <Td>
+                      <span className="rounded-full border border-neutral-700 px-2 py-0.5 text-xs uppercase tracking-wide">
+                        {role}
+                      </span>
+                    </Td>
+                    <Td>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-xs uppercase tracking-wide border ${
+                          status === "active"
+                            ? "border-emerald-600 text-emerald-400"
+                            : "border-neutral-600 text-neutral-400"
+                        }`}
                       >
-                        View
-                      </Link>
-                      {/* Issue Fine (role checks enforced by RLS) */}
-                      <button
-                        onClick={() => openIssueFine(m)}
-                        className="rounded border border-yellow-500/40 text-yellow-300 hover:bg-yellow-500/10 px-2 py-1 text-xs"
-                        title="Issue Fine (Secretary/SysAdmin)"
-                      >
-                        Issue Fine
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
+                        {status}
+                      </span>
+                    </Td>
+                    <Td className="text-neutral-300">{joined}</Td>
+                    <Td className="text-right">
+                      <div className="inline-flex items-center gap-2">
+                        <Link
+                          href={`/members/${m.id}`}
+                          className="rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800"
+                        >
+                          View
+                        </Link>
+                        <Link
+                          href={`/finances?member=${encodeURIComponent(m.id)}`}
+                          className="rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800"
+                        >
+                          Finance
+                        </Link>
+                      </div>
+                    </Td>
+                  </tr>
+                );
+              })
+            )}
           </tbody>
         </table>
-
-        {loading && <div className="p-4 text-sm text-white/60">Loading…</div>}
-        {err && <div className="p-4 text-sm text-red-400">{err}</div>}
       </div>
 
-      {/* Modal */}
-      <IssueFineDialog
-        open={fineOpen}
-        onClose={() => setFineOpen(false)}
-        memberId={fineMemberId}
-        memberName={fineMemberName}
-        onIssued={load}
-      />
+      {/* Info: how avatars are resolved */}
+      <p className="mt-3 text-xs text-neutral-500">
+        Avatars are loaded from the <code>avatars</code> storage bucket using file names like{" "}
+        <code>{`<member_id>.png|jpg|jpeg|webp`}</code>. For example: <code>avatars/2c0f…abcd.png</code>.
+      </p>
     </div>
   );
+}
+
+/* ---------- small presentational helpers (no external deps) ---------- */
+
+function Th({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <th
+      className={`text-left font-semibold text-xs uppercase tracking-wide px-4 py-3 ${className}`}
+    >
+      {children}
+    </th>
+  );
+}
+
+function Td({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return <td className={`px-4 py-3 align-middle ${className}`}>{children}</td>;
 }

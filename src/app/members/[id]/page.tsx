@@ -1,560 +1,159 @@
 // src/app/members/[id]/page.tsx
-"use client";
-
-import { useEffect, useMemo, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { supabase as supabaseMaybe } from "@/lib/supabase";
-import { getCurrentUserRole, type AppRole } from "@/lib/userRole";
-import { formatCurrency, formatNumber } from "@/lib/format";
+import EditMemberPanel from "./EditMemberPanel";
 
 function sb() {
-  // supports both: exported client or factory function
-  // @ts-ignore
+  // @ts-expect-error – tolerate factory or client
   return typeof supabaseMaybe === "function" ? supabaseMaybe() : supabaseMaybe;
 }
 
-// ----- types kept loose to avoid TS friction with your current schema
 type Member = {
-  id: number;
-  full_name: string;
-  email?: string | null;
-  role?: string | null;       // "sysadmin" | "secretary" | "member"
-  status?: string | null;     // "active" | "suspended"
-  joined_at?: string | null;  // date
+  id: string;                 // bigint in DB, we read as string
+  user_id: string | null;     // uuid (auth user)
+  full_name: string | null;
+  email: string | null;
+  role: string | null;
+  status: string | null;
+  created_at: string | null;
 };
 
-type Fine = {
-  id: number;
-  member_id: number;
-  date?: string | null;
-  reason?: string | null;
-  status: string;             // "paid" | "unpaid"
-  amount: number;             // numeric
-};
+export const revalidate = 0;
 
-type Loan = {
-  id: number;
-  member_id: number;
-  date?: string | null;
-  description?: string | null;
-  status?: string | null;     // "active" | "repaid" | "outstanding" | etc.
-  amount?: number | null;     // legacy
-  amount_issued?: number | null;
-  amount_repaid?: number | null;
-};
+export default async function MemberProfilePage({
+  params,
+}: { params: { id?: string } }) {
+  const s = sb();
 
-type Attendance = {
-  id: number;
-  meeting_id: number;
-  member_id: number;
-  status: string;             // "present" | "absent" | "leave"
-};
+  // --------- Guard: reject missing/undefined ----------
+  const slug = (params.id ?? "").trim();
+  if (!slug || slug.toLowerCase() === "undefined" || slug.toLowerCase() === "null") {
+    notFound();
+  }
 
-type Meeting = {
-  id: number;
-  title?: string | null;
-  scheduled_for?: string | null;
-};
+  // Detect if slug is a UUID (user_id) or a numeric id
+  const UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const isUuid = UUID_RE.test(slug);
+  const column = isUuid ? "user_id" : "id";
 
-type TabKey = "overview" | "fines" | "loans" | "attendance";
+  // For numeric id, also make sure it's digits only; if not, 404
+  if (!isUuid && !/^[0-9]+$/.test(slug)) {
+    notFound();
+  }
 
-export default function MemberProfilePage() {
-  const supabase = sb();
-  const router = useRouter();
-  const params = useParams<{ id: string }>();
-  const memberId = Number(params?.id);
+  // --------- Load the member using the appropriate column ----------
+  const { data: rows, error } = await s
+    .from("members")
+    .select("id,user_id,full_name,email,role,status,created_at")
+    .eq(column, slug) // string is fine for both bigint and uuid here
+    .limit(1);
 
-  const [role, setRole] = useState<AppRole>("guest");
-  const [tab, setTab] = useState<TabKey>("overview");
+  if (error) {
+    return (
+      <div className="p-6">
+        <h1 className="text-2xl font-semibold mb-2">Member</h1>
+        <p className="text-red-400">Error: {error.message}</p>
+      </div>
+    );
+  }
 
-  const [member, setMember] = useState<Member | null>(null);
-  const [fines, setFines] = useState<Fine[]>([]);
-  const [loans, setLoans] = useState<Loan[]>([]);
-  const [attendance, setAttendance] = useState<Attendance[]>([]);
-  const [meetingsMap, setMeetingsMap] = useState<Record<number, Meeting>>({});
+  const member = (rows?.[0] ?? null) as Member | null;
+  if (!member) notFound();
 
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  // --------- Viewer permissions (isSelf / canAdmin) ----------
+  const { data: auth } = await s.auth.getUser();
+  const viewerUid = auth?.user?.id ?? null;
 
-  const canWrite = role === "sysadmin" || role === "secretary";
+  let canAdmin = false;
+  let isSelf = false;
+  if (viewerUid) {
+    isSelf = member.user_id === viewerUid;
+    const { data: meRow } = await s
+      .from("members")
+      .select("role,user_id")
+      .eq("user_id", viewerUid)
+      .limit(1)
+      .maybeSingle();
+    const viewerRole = (meRow?.role ?? "member").toLowerCase();
+    canAdmin = ["sysadmin", "secretary"].includes(viewerRole);
+  }
 
-  useEffect(() => {
-    if (!memberId || Number.isNaN(memberId)) return;
-    let gone = false;
-
-    async function boot() {
-      setLoading(true);
-      setErr(null);
-
-      try {
-        // current app role
-        try {
-          const r = await getCurrentUserRole();
-          if (!gone) setRole(r);
-        } catch {
-          if (!gone) setRole("guest");
-        }
-
-        // member
-        const m = await supabase
-          .from("members")
-          .select("id,full_name,email,role,status,joined_at")
-          .eq("id", memberId)
-          .maybeSingle();
-
-        if (m.error) throw m.error;
-        if (!gone) setMember(m.data as Member);
-
-        // fines
-        const f = await supabase
-          .from("fines")
-          .select("id,member_id,date,reason,status,amount")
-          .eq("member_id", memberId)
-          .order("date", { ascending: false })
-          .limit(500);
-
-        if (!gone) setFines((f.data ?? []) as Fine[]);
-
-        // loans (support old/new schema)
-        const l = await supabase
-          .from("loans")
-          .select("id,member_id,date,description,status,amount,amount_issued,amount_repaid")
-          .eq("member_id", memberId)
-          .order("date", { ascending: false })
-          .limit(500);
-
-        if (!gone) setLoans((l.data ?? []) as Loan[]);
-
-        // attendance
-        const a = await supabase
-          .from("attendance")
-          .select("id,meeting_id,member_id,status")
-          .eq("member_id", memberId)
-          .limit(500);
-
-        const att = (a.data ?? []) as Attendance[];
-        if (!gone) setAttendance(att);
-
-        // fetch related meetings for nice labels
-        const ids = Array.from(new Set(att.map((x) => x.meeting_id))).filter(Boolean);
-        if (ids.length) {
-          const chunked = chunk(ids, 100); // in case of many
-          const maps: Record<number, Meeting> = {};
-          for (const chunkIds of chunked) {
-            const mm = await supabase
-              .from("meetings")
-              .select("id,title,scheduled_for")
-              .in("id", chunkIds);
-            (mm.data ?? []).forEach((r: any) => {
-              maps[r.id] = { id: r.id, title: r.title, scheduled_for: r.scheduled_for };
-            });
-          }
-          if (!gone) setMeetingsMap(maps);
-        }
-      } catch (e: any) {
-        if (!gone) setErr(e?.message || "Failed to load member profile");
-      } finally {
-        if (!gone) setLoading(false);
-      }
-    }
-
-    boot();
-    return () => {
-      gone = true;
-    };
-  }, [memberId, supabase]);
-
-  // ---- Derived numbers
-  const finesPaid = useMemo(
-    () => fines.filter((x) => x.status === "paid").reduce((t, x) => t + Number(x.amount || 0), 0),
-    [fines]
-  );
-  const finesUnpaid = useMemo(
-    () => fines.filter((x) => x.status === "unpaid").reduce((t, x) => t + Number(x.amount || 0), 0),
-    [fines]
-  );
-
-  const loansIssued = useMemo(
-    () =>
-      loans.reduce((t, x) => {
-        const issued = Number(x.amount_issued ?? x.amount ?? 0);
-        return t + issued;
-      }, 0),
-    [loans]
-  );
-  const loansRepaid = useMemo(
-    () =>
-      loans.reduce((t, x) => {
-        const repaid = Number(x.amount_repaid ?? 0);
-        return t + repaid;
-      }, 0),
-    [loans]
-  );
-  const loansOutstanding = Math.max(0, loansIssued - loansRepaid);
-
-  // ---- Actions: suspend / activate
-  async function toggleStatus() {
-    if (!member) return;
-    if (!canWrite) return;
-
-    const next = (member.status ?? "active") === "active" ? "suspended" : "active";
-    setBusy(true);
-    setErr(null);
-
-    // optimistic
-    const prev = member;
-    setMember({ ...member, status: next });
-
-    try {
-      const { error } = await supabase.from("members").update({ status: next }).eq("id", member.id);
-      if (error) throw error;
-    } catch (e: any) {
-      setErr(e?.message || "Failed to update status");
-      setMember(prev);
-    } finally {
-      setBusy(false);
+  // --------- Avatar candidates (no DB column required) ----------
+  const storage = s.storage.from("avatars");
+  const candidates: string[] = [];
+  if (member.user_id) {
+    for (const ext of ["png", "jpg", "jpeg", "webp"]) {
+      const { data: pub } = storage.getPublicUrl(`${member.user_id}.${ext}`);
+      if (pub?.publicUrl) candidates.push(pub.publicUrl);
     }
   }
 
+  const joinedTxt = member.created_at
+    ? new Date(member.created_at).toLocaleDateString()
+    : "—";
+
   return (
-    <div className="space-y-6">
-      {/* Back link */}
-      <div className="flex items-center justify-between">
-        <button
-          onClick={() => router.back()}
-          className="text-xs rounded border border-white/10 px-2 py-1 hover:bg-white/10"
-        >
-          ← Back
-        </button>
-        <Link
-          href="/members"
-          className="text-xs rounded border border-white/10 px-2 py-1 hover:bg-white/10"
-        >
-          Members
-        </Link>
-      </div>
-
-      {/* Header card */}
-      <div className="rounded-xl border border-white/10 bg-black/30 p-5">
-        {loading ? (
-          <p className="text-sm text-white/70">Loading…</p>
-        ) : err ? (
-          <p className="text-sm text-red-400">{err}</p>
-        ) : !member ? (
-          <p className="text-sm text-white/70">Member not found.</p>
-        ) : (
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-            <div className="flex items-center gap-4">
-              <div className="grid h-14 w-14 place-items-center rounded-full bg-white/10 text-lg font-semibold">
-                {initials(member.full_name)}
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h1 className="text-xl font-semibold">{member.full_name}</h1>
-                  {member.role ? (
-                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-xs uppercase tracking-wide">
-                      {member.role}
-                    </span>
-                  ) : null}
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-xs uppercase tracking-wide border ${
-                      (member.status ?? "active") === "active"
-                        ? "border-green-500/30 text-green-300 bg-green-500/10"
-                        : "border-yellow-400/30 text-yellow-200 bg-yellow-400/10"
-                    }`}
-                  >
-                    {member.status ?? "active"}
-                  </span>
-                </div>
-                <p className="text-sm text-white/70">{member.email || "—"}</p>
-                <p className="text-xs text-white/50">
-                  Joined: {member.joined_at ? new Date(member.joined_at).toLocaleDateString() : "—"}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {canWrite && (
-                <button
-                  onClick={toggleStatus}
-                  disabled={busy}
-                  className="rounded px-3 py-2 text-sm border border-white/10 hover:bg-white/10 disabled:opacity-50"
-                  title="Suspend/Activate"
-                >
-                  {(member.status ?? "active") === "active" ? "Suspend" : "Activate"}
-                </button>
-              )}
-            </div>
+    <div className="p-6 space-y-6">
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="text-3xl font-semibold">{member.full_name ?? "—"}</div>
+          <div className="mt-1 text-neutral-400">{member.email ?? "—"}</div>
+          <div className="mt-2 flex items-center gap-2">
+            <Badge>{(member.role ?? "member").toUpperCase()}</Badge>
+            <Badge
+              className={
+                (member.status ?? "active").toLowerCase() === "active"
+                  ? "border-emerald-600 text-emerald-400"
+                  : "border-neutral-600 text-neutral-400"
+              }
+            >
+              {(member.status ?? "active").toUpperCase()}
+            </Badge>
+            <span className="text-sm text-neutral-500">Joined: {joinedTxt}</span>
           </div>
+        </div>
+
+        {(isSelf || canAdmin) && (
+          <a
+            href="#edit-panel"
+            className="rounded-lg bg-amber-500/90 hover:bg-amber-500 text-black px-4 py-2 text-sm font-medium"
+          >
+            Edit profile
+          </a>
         )}
       </div>
 
-      {/* Tabs */}
-      <div className="flex items-center gap-2">
-        <TabBtn now={tab} setNow={setTab} me="overview">Overview</TabBtn>
-        <TabBtn now={tab} setNow={setTab} me="fines">Fines</TabBtn>
-        <TabBtn now={tab} setNow={setTab} me="loans">Loans</TabBtn>
-        <TabBtn now={tab} setNow={setTab} me="attendance">Attendance</TabBtn>
+      {(isSelf || canAdmin) && (
+        <EditMemberPanel
+          id="edit-panel"
+          member={member}
+          avatarCandidates={candidates}
+          canAdmin={canAdmin}
+          isSelf={isSelf}
+        />
+      )}
+
+      <div className="flex gap-2">
+        <Link className="btn-tab" href={`/members/${member.id}`}>Overview</Link>
+        <Link className="btn-tab" href={`/members/${member.id}?t=fines`}>Fines</Link>
+        <Link className="btn-tab" href={`/members/${member.id}?t=loans`}>Loans</Link>
+        <Link className="btn-tab" href={`/members/${member.id}?t=attendance`}>Attendance</Link>
       </div>
-
-      {/* Panels */}
-      {tab === "overview" && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Card>
-            <h3 className="text-sm font-medium">Financial Summary</h3>
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              <Metric label="Fines Paid" value={formatCurrency(finesPaid)} />
-              <Metric label="Fines Unpaid" value={formatCurrency(finesUnpaid)} />
-              <Metric label="Loans Issued" value={formatCurrency(loansIssued)} />
-              <Metric label="Loans Repaid" value={formatCurrency(loansRepaid)} />
-              <Metric label="Outstanding" value={formatCurrency(loansOutstanding)} />
-            </div>
-            <div className="mt-3 text-xs text-white/50">
-              From tables <code>fines</code> &amp; <code>loans</code>.
-            </div>
-          </Card>
-
-          <Card>
-            <h3 className="text-sm font-medium">Attendance Snapshot</h3>
-            <div className="mt-3 grid grid-cols-3 gap-3">
-              <Metric
-                label="Present"
-                value={formatNumber(attendance.filter((x) => x.status === "present").length)}
-              />
-              <Metric
-                label="Absent"
-                value={formatNumber(attendance.filter((x) => x.status === "absent").length)}
-              />
-              <Metric
-                label="On Leave"
-                value={formatNumber(attendance.filter((x) => x.status === "leave").length)}
-              />
-            </div>
-            <div className="mt-3 text-xs text-white/50">
-              From table <code>attendance</code>.
-            </div>
-          </Card>
-        </div>
-      )}
-
-      {tab === "fines" && (
-        <Card>
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium">Fines History</h3>
-            <div className="text-xs text-white/60">
-              Paid: {formatCurrency(finesPaid)} • Unpaid: {formatCurrency(finesUnpaid)}
-            </div>
-          </div>
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-white/60">
-                <tr>
-                  <th className="py-2 pr-4">Date</th>
-                  <th className="py-2 pr-4">Reason</th>
-                  <th className="py-2 pr-4">Status</th>
-                  <th className="py-2 pr-4 text-right">Amount</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/10">
-                {fines.map((f) => (
-                  <tr key={f.id}>
-                    <td className="py-2 pr-4">{f.date ? new Date(f.date).toLocaleDateString() : "—"}</td>
-                    <td className="py-2 pr-4">{f.reason || "—"}</td>
-                    <td className="py-2 pr-4">
-                      <span
-                        className={`rounded px-2 py-0.5 text-xs uppercase tracking-wide border ${
-                          f.status === "paid"
-                            ? "border-green-500/30 text-green-300 bg-green-500/10"
-                            : "border-yellow-400/30 text-yellow-200 bg-yellow-400/10"
-                        }`}
-                      >
-                        {f.status}
-                      </span>
-                    </td>
-                    <td className="py-2 pr-4 text-right">{formatCurrency(Number(f.amount || 0))}</td>
-                  </tr>
-                ))}
-                {fines.length === 0 && (
-                  <tr>
-                    <td colSpan={4} className="py-4 text-white/60">
-                      No fines recorded.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
-
-      {tab === "loans" && (
-        <Card>
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium">Loans</h3>
-            <div className="text-xs text-white/60">
-              Issued: {formatCurrency(loansIssued)} • Repaid: {formatCurrency(loansRepaid)} •{" "}
-              <b>Outstanding: {formatCurrency(loansOutstanding)}</b>
-            </div>
-          </div>
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-white/60">
-                <tr>
-                  <th className="py-2 pr-4">Date</th>
-                  <th className="py-2 pr-4">Description</th>
-                  <th className="py-2 pr-4">Status</th>
-                  <th className="py-2 pr-4 text-right">Issued</th>
-                  <th className="py-2 pr-4 text-right">Repaid</th>
-                  <th className="py-2 pr-4 text-right">Balance</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/10">
-                {loans.map((l) => {
-                  const issued = Number(l.amount_issued ?? l.amount ?? 0);
-                  const repaid = Number(l.amount_repaid ?? 0);
-                  const balance = Math.max(0, issued - repaid);
-                  return (
-                    <tr key={l.id}>
-                      <td className="py-2 pr-4">
-                        {l.date ? new Date(l.date).toLocaleDateString() : "—"}
-                      </td>
-                      <td className="py-2 pr-4">{l.description || "—"}</td>
-                      <td className="py-2 pr-4">
-                        <span className="rounded px-2 py-0.5 text-xs uppercase tracking-wide border border-white/10 bg-white/5">
-                          {l.status || "—"}
-                        </span>
-                      </td>
-                      <td className="py-2 pr-4 text-right">{formatCurrency(issued)}</td>
-                      <td className="py-2 pr-4 text-right">{formatCurrency(repaid)}</td>
-                      <td className="py-2 pr-4 text-right">{formatCurrency(balance)}</td>
-                    </tr>
-                  );
-                })}
-                {loans.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="py-4 text-white/60">
-                      No loans recorded.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
-
-      {tab === "attendance" && (
-        <Card>
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium">Attendance</h3>
-            <div className="text-xs text-white/60">
-              {formatNumber(attendance.length)} records
-            </div>
-          </div>
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-white/60">
-                <tr>
-                  <th className="py-2 pr-4">Meeting</th>
-                  <th className="py-2 pr-4">When</th>
-                  <th className="py-2 pr-4">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/10">
-                {attendance.map((a) => {
-                  const mt = meetingsMap[a.meeting_id];
-                  return (
-                    <tr key={a.id}>
-                      <td className="py-2 pr-4">{mt?.title || `#${a.meeting_id}`}</td>
-                      <td className="py-2 pr-4">
-                        {mt?.scheduled_for ? new Date(mt.scheduled_for).toLocaleString() : "—"}
-                      </td>
-                      <td className="py-2 pr-4">
-                        <span
-                          className={`rounded px-2 py-0.5 text-xs uppercase tracking-wide border ${
-                            a.status === "present"
-                              ? "border-green-500/30 text-green-300 bg-green-500/10"
-                              : a.status === "leave"
-                              ? "border-yellow-400/30 text-yellow-200 bg-yellow-400/10"
-                              : "border-red-500/30 text-red-300 bg-red-500/10"
-                          }`}
-                        >
-                          {a.status}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {attendance.length === 0 && (
-                  <tr>
-                    <td colSpan={3} className="py-4 text-white/60">
-                      No attendance yet.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
     </div>
   );
 }
 
-/** helpers */
-function initials(name: string) {
-  const parts = (name || "").trim().split(/\s+/);
-  if (!parts.length) return "?";
-  const first = parts[0]?.[0] ?? "";
-  const last = parts[parts.length - 1]?.[0] ?? "";
-  return (first + last).toUpperCase();
-}
-
-function chunk<T>(arr: T[], size: number) {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
-
-function Card({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="rounded-xl border border-white/10 bg-black/30 p-5">{children}</div>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-white/10 bg-white/5 p-3">
-      <div className="text-xs text-white/60">{label}</div>
-      <div className="mt-1 text-lg font-semibold">{value}</div>
-    </div>
-  );
-}
-
-function TabBtn({
-  now,
-  setNow,
-  me,
+function Badge({
   children,
-}: {
-  now: TabKey;
-  setNow: (t: TabKey) => void;
-  me: TabKey;
-  children: React.ReactNode;
-}) {
-  const active = now === me;
+  className = "",
+}: { children: React.ReactNode; className?: string }) {
   return (
-    <button
-      onClick={() => setNow(me)}
-      className={`rounded-lg px-3 py-2 text-sm border ${
-        active
-          ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-300"
-          : "border-white/10 bg-white/5 hover:bg-white/10"
-      }`}
+    <span
+      className={`inline-flex items-center rounded-full border border-neutral-700 px-2 py-0.5 text-xs tracking-wide ${className}`}
     >
       {children}
-    </button>
+    </span>
   );
 }

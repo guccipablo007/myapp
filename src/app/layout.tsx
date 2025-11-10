@@ -1,14 +1,13 @@
-import type { Metadata } from 'next';
-import './globals.css';
+import type { Metadata } from "next";
+import "./globals.css";
 
-// 👇 AppSidebar is default export
-import AppSidebar from '@/components/AppSidebar';
-// 👇 TopBar is a named export
-import { TopBar } from '@/components/TopBar';
+// Use relative paths so we don’t depend on tsconfig path aliases
+import AppSidebar from "../components/AppSidebar";
+import TopBar from "../components/TopBar";
 
 export const metadata: Metadata = {
-  title: 'CAMSU Admin',
-  description: 'Community admin dashboard',
+  title: "CAMSU Admin",
+  description: "Community admin panel",
 };
 
 export default function RootLayout({
