@@ -1,215 +1,193 @@
 "use client";
 
-// src/app/members/[id]/EditMemberPanel.tsx
 import { useState } from "react";
-import Image from "next/image";
 import { supabase as supabaseMaybe } from "@/lib/supabase";
 
 function sbClient() {
-  // @ts-expect-error – tolerate factory or client
-  return typeof supabaseMaybe === "function" ? supabaseMaybe() : supabaseMaybe;
+  const s: any = typeof supabaseMaybe === "function" ? (supabaseMaybe as any)() : (supabaseMaybe as any);
+  return s;
 }
 
-type Member = {
-  id: string;
-  user_id: string | null;
-  full_name: string | null;
-  email: string | null;
-  role: string | null;
-  status: string | null;
+type Props = {
+  memberId: string;
+  initial?: {
+    full_name?: string | null;
+    email?: string | null;
+    role?: string | null;
+    status?: string | null;
+  };
 };
 
-export default function EditMemberPanel({
-  id,
-  member,
-  avatarCandidates,
-  canAdmin,
-  isSelf,
-}: {
-  id?: string;
-  member: Member;
-  avatarCandidates: string[];
-  canAdmin: boolean;
-  isSelf: boolean;
-}) {
-  const s = sbClient();
+export default function EditMemberPanel({ memberId, initial }: Props) {
+  const [fullName, setFullName] = useState(initial?.full_name ?? "");
+  const [email, setEmail] = useState(initial?.email ?? "");
+  const [role, setRole] = useState(initial?.role ?? "member");
+  const [status, setStatus] = useState(initial?.status ?? "active");
 
-  const [fullName, setFullName] = useState(member.full_name ?? "");
-  const [email, setEmail] = useState(member.email ?? "");
-  const [status, setStatus] = useState((member.status ?? "active").toLowerCase());
-  const [role, setRole] = useState((member.role ?? "member").toLowerCase());
-
-  const [avatarPreview, setAvatarPreview] = useState<string | null>(
-    avatarCandidates[0] ?? null
-  );
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
+  // Avatar preview url (public)
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+
   async function saveProfile() {
-    setBusy(true);
-    setMsg(null);
     setErr(null);
-    const payload: Record<string, any> = {
-      full_name: fullName || null,
-      email: email || null,
-      status,
-    };
-    if (canAdmin) payload.role = role;
+    setMsg(null);
+    setBusy(true);
 
-    const { error } = await s
+    const sb = sbClient();
+    const { error } = await sb
       .from("members")
-      .update(payload)
-      .eq("id", member.id);
-
-    setBusy(false);
-    if (error) setErr(error.message);
-    else setMsg("Profile updated.");
-  }
-
-  async function uploadAvatar(file: File) {
-    if (!member.user_id) {
-      setErr("This member is not linked to an auth user (user_id is null).");
-      return;
-    }
-    setBusy(true);
-    setMsg(null);
-    setErr(null);
-
-    const ext = (file.name.split(".").pop() || "png").toLowerCase();
-    const path = `${member.user_id}.${ext}`;
-
-    // upsert to 'avatars' bucket
-    const { error } = await s.storage
-      .from("avatars")
-      .upload(path, file, { upsert: true, cacheControl: "3600" });
+      .update({
+        full_name: fullName || null,
+        email: email || null,
+        role: role || null,
+        status: status || null,
+      })
+      .eq("id", memberId);
 
     setBusy(false);
     if (error) {
       setErr(error.message);
     } else {
-      const { data: pub } = s.storage.from("avatars").getPublicUrl(path);
-      setAvatarPreview(pub?.publicUrl ?? null);
+      setMsg("Profile updated.");
+    }
+  }
+
+  function extOf(file: File) {
+    const m = /\.(png|jpg|jpeg|webp)$/i.exec(file.name);
+    if (m) return m[1].toLowerCase();
+    // fallbacks by mime
+    if (file.type.includes("png")) return "png";
+    if (file.type.includes("webp")) return "webp";
+    return "jpg";
+  }
+
+  async function uploadAvatar(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setErr(null);
+    setMsg(null);
+    setBusy(true);
+
+    try {
+      const sb = sbClient();
+      const ext = extOf(file);
+      const path = `${memberId}.${ext}`;
+
+      // Upsert into "avatars" bucket
+      const { error: upErr } = await sb.storage
+        .from("avatars")
+        .upload(path, file, { upsert: true, cacheControl: "3600" });
+      if (upErr) throw upErr;
+
+      // Get a public URL (bucket should be public-read; if private, switch to signed URL)
+      const { data: pub } = sb.storage.from("avatars").getPublicUrl(path);
+      if (pub?.publicUrl) setAvatarUrl(pub.publicUrl);
+
       setMsg("Avatar uploaded.");
+    } catch (e: any) {
+      setErr(e?.message ?? "Upload failed.");
+    } finally {
+      setBusy(false);
+      // reset the input so the same file can be reselected if needed
+      e.currentTarget.value = "";
     }
   }
 
   return (
-    <div id={id} className="rounded-2xl border border-neutral-800 p-4">
-      <div className="flex items-center justify-between mb-3">
-        <div className="font-semibold">Edit profile</div>
-        {(busy || msg || err) && (
-          <div className="text-sm">
-            {busy && <span className="text-neutral-400">Working…</span>}
-            {msg && <span className="text-emerald-400">{msg}</span>}
-            {err && <span className="text-red-400">{err}</span>}
-          </div>
-        )}
+    <div className="rounded-xl border border-neutral-800 p-4 space-y-4">
+      <h3 className="text-lg font-semibold">Edit Member</h3>
+
+      {err && (
+        <div className="text-sm text-red-400 border border-red-900/40 bg-red-950/20 rounded-lg px-3 py-2">
+          {err}
+        </div>
+      )}
+      {msg && (
+        <div className="text-sm text-emerald-400 border border-emerald-900/40 bg-emerald-950/20 rounded-lg px-3 py-2">
+          {msg}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <label className="text-sm">
+          <span className="block mb-1 text-neutral-300">Full name</span>
+          <input
+            className="w-full rounded-lg bg-neutral-900/60 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+            value={fullName}
+            onChange={(e) => setFullName(e.currentTarget.value)}
+            placeholder="John Doe"
+          />
+        </label>
+
+        <label className="text-sm">
+          <span className="block mb-1 text-neutral-300">Email</span>
+          <input
+            type="email"
+            className="w-full rounded-lg bg-neutral-900/60 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+            value={email}
+            onChange={(e) => setEmail(e.currentTarget.value)}
+            placeholder="john@example.com"
+          />
+        </label>
+
+        <label className="text-sm">
+          <span className="block mb-1 text-neutral-300">Role</span>
+          <select
+            className="w-full rounded-lg bg-neutral-900/60 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+            value={role}
+            onChange={(e) => setRole(e.currentTarget.value)}
+          >
+            <option value="member">Member</option>
+            <option value="secretary">Secretary</option>
+            <option value="sysadmin">SysAdmin</option>
+          </select>
+        </label>
+
+        <label className="text-sm">
+          <span className="block mb-1 text-neutral-300">Status</span>
+          <select
+            className="w-full rounded-lg bg-neutral-900/60 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+            value={status}
+            onChange={(e) => setStatus(e.currentTarget.value)}
+          >
+            <option value="active">Active</option>
+            <option value="suspended">Suspended</option>
+            <option value="inactive">Inactive</option>
+          </select>
+        </label>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-[160px_1fr] gap-6">
-        {/* Avatar */}
-        <div>
-          <div className="w-32 h-32 rounded-full overflow-hidden border border-neutral-800 bg-neutral-900/60">
-            {avatarPreview ? (
-              <Image
-                src={avatarPreview}
-                alt="avatar"
-                width={128}
-                height={128}
-                className="object-cover w-full h-full"
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center text-neutral-500 text-sm">
-                No photo
-              </div>
-            )}
-          </div>
-          {(isSelf || canAdmin) && (
-            <label className="mt-3 inline-flex items-center gap-2 rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800 cursor-pointer">
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) uploadAvatar(f);
-                }}
-              />
-              Upload photo
-            </label>
-          )}
-        </div>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={saveProfile}
+          disabled={busy}
+          className="rounded-lg bg-amber-500/90 hover:bg-amber-500 text-black font-medium px-4 py-2 disabled:opacity-60"
+        >
+          {busy ? "Saving…" : "Save changes"}
+        </button>
 
-        {/* Form */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <label className="block">
-            <span className="text-xs text-neutral-500">Full name</span>
-            <input
-              className="mt-1 w-full rounded-lg bg-neutral-900/60 border border-neutral-800 px-3 py-2 text-sm outline-none focus:border-neutral-600"
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              placeholder="Full name"
-            />
-          </label>
+        <label className="inline-flex items-center gap-2 rounded-lg border border-neutral-700 px-4 py-2 hover:bg-neutral-800 cursor-pointer">
+          <span>Upload avatar</span>
+          <input type="file" accept="image/*" className="hidden" onChange={uploadAvatar} />
+        </label>
 
-          <label className="block">
-            <span className="text-xs text-neutral-500">Email</span>
-            <input
-              className="mt-1 w-full rounded-lg bg-neutral-900/60 border border-neutral-800 px-3 py-2 text-sm outline-none focus:border-neutral-600"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="user@example.com"
-            />
-          </label>
-
-          <label className="block">
-            <span className="text-xs text-neutral-500">Status</span>
-            <select
-              className="mt-1 w-full rounded-lg bg-neutral-900/60 border border-neutral-800 px-3 py-2 text-sm outline-none focus:border-neutral-600"
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-            >
-              <option value="active">active</option>
-              <option value="inactive">inactive</option>
-            </select>
-          </label>
-
-          <label className="block">
-            <span className="text-xs text-neutral-500">Role</span>
-            <select
-              disabled={!canAdmin}
-              className="mt-1 w-full rounded-lg bg-neutral-900/60 border border-neutral-800 px-3 py-2 text-sm outline-none focus:border-neutral-600 disabled:opacity-50"
-              value={role}
-              onChange={(e) => setRole(e.target.value)}
-            >
-              <option value="member">member</option>
-              <option value="secretary">secretary</option>
-              <option value="sysadmin">sysadmin</option>
-            </select>
-            {!canAdmin && (
-              <div className="text-xs text-neutral-500 mt-1">
-                Only admins can change roles.
-              </div>
-            )}
-          </label>
-
-          <div className="md:col-span-2 mt-2">
-            <button
-              onClick={saveProfile}
-              disabled={busy}
-              className="rounded-lg bg-amber-500/90 hover:bg-amber-500 text-black px-4 py-2 text-sm font-medium disabled:opacity-60"
-            >
-              Save changes
-            </button>
-          </div>
-        </div>
+        {avatarUrl ? (
+          <a
+            href={avatarUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs text-neutral-300 underline"
+          >
+            View current avatar
+          </a>
+        ) : null}
       </div>
 
-      <p className="mt-4 text-xs text-neutral-500">
-        Avatars are served from the <code>avatars</code> bucket using file names{" "}
-        <code>{`<user_id>.png|jpg|jpeg|webp`}</code>. Your RLS allows self-updates,
-        with admin override for <code>sysadmin</code>/<code>secretary</code>.
+      <p className="text-xs text-neutral-500">
+        Avatars are stored in the <code>avatars</code> bucket with filename <code>{memberId}.png|jpg|webp</code>.
       </p>
     </div>
   );
