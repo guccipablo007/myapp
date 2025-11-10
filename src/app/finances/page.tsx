@@ -1,17 +1,16 @@
-import { formatCurrency } from '@/lib/format';
-import { supabase as supabaseMaybe } from '@/lib/supabase';
-import { MonthlyInOutChart, CompositionChart } from './ClientCharts';
-import ClientFinesTable from './ClientFinesTable';
+// src/app/finances/page.tsx
+import { formatCurrency } from "@/lib/format";
+import { supabase as supabaseMaybe } from "@/lib/supabase";
+import { MonthlyInOutChart, CompositionChart } from "./ClientCharts";
+import ClientFinesTable from "./ClientFinesTable";
 
-/* ------------------------------ Supabase helper ------------------------------ */
-// Supports both shapes of the supabase export in your project (factory or client)
+// Works whether you export a Supabase client or a factory function
 function sb() {
-  // @ts-expect-error – support function export or client object
-  const s = typeof supabaseMaybe === 'function' ? supabaseMaybe() : supabaseMaybe;
-  return s;
+  const maybe: any = supabaseMaybe as any;
+  return typeof maybe === "function" ? maybe() : maybe;
 }
 
-/* ------------------------------- Date helpers -------------------------------- */
+/** Try multiple date fields gracefully (schema evolved during build) */
 function pickDate(row: Record<string, any>, fields: string[]): Date | null {
   for (const f of fields) {
     const val = row?.[f];
@@ -21,9 +20,13 @@ function pickDate(row: Record<string, any>, fields: string[]): Date | null {
   }
   return null;
 }
+
+/** YYYY-MM label */
 function ym(d: Date) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
+
+/** Build an array of the last N months (labels only) */
 function lastNMonths(n = 12): string[] {
   const out: string[] = [];
   const base = new Date();
@@ -35,16 +38,19 @@ function lastNMonths(n = 12): string[] {
   }
   return out;
 }
-const toNum = (x: any) => (typeof x === 'number' ? x : parseFloat(x ?? 0)) || 0;
 
-/* ============================== Server component ============================= */
+/** safe numeric */
+const toNum = (x: any) => (typeof x === "number" ? x : parseFloat(x ?? 0)) || 0;
+
 export default async function FinancePage() {
   const s = sb();
 
-  // --- fetch raw rows used for metrics/charts (tolerant columns) ---
+  // ------- Fetch raw rows (columns are flexible to match your DB) -------
   const [finesRes, loansRes] = await Promise.all([
-    s.from('fines').select('amount,status,paid_on,issued_on,created_at'),
-    s.from('loans').select('amount,amount_repaid,status,issued_on,repaid_on,created_at'),
+    s.from("fines").select("amount,status,paid_on,issued_on,created_at"),
+    s
+      .from("loans")
+      .select("amount,amount_repaid,status,issued_on,repaid_on,created_at"),
   ]);
 
   if (finesRes.error) {
@@ -67,58 +73,57 @@ export default async function FinancePage() {
   const fines = finesRes.data ?? [];
   const loans = loansRes.data ?? [];
 
-  // --- totals ---
+  // ------- Totals -------
   const finesPaid = fines
-    .filter((f: any) => (f.status ?? '').toLowerCase() === 'paid')
+    .filter((f: any) => (f.status ?? "").toLowerCase() === "paid")
     .reduce((acc: number, f: any) => acc + toNum(f.amount), 0);
 
   const finesUnpaid = fines
-    .filter((f: any) => (f.status ?? '').toLowerCase() === 'unpaid')
+    .filter((f: any) => (f.status ?? "").toLowerCase() === "unpaid")
     .reduce((acc: number, f: any) => acc + toNum(f.amount), 0);
 
   const loansIssued = loans.reduce((acc: number, r: any) => {
-    const st = (r.status ?? '').toLowerCase();
-    if (['issued', 'active', 'outstanding'].includes(st)) acc += toNum(r.amount);
+    const st = (r.status ?? "").toLowerCase();
+    if (["issued", "active", "outstanding"].includes(st)) acc += toNum(r.amount);
     return acc;
   }, 0);
 
   const loansRepaid = loans.reduce((acc: number, r: any) => {
-    const st = (r.status ?? '').toLowerCase();
-    if (st === 'repaid') acc += toNum(r.amount_repaid ?? r.amount);
+    const st = (r.status ?? "").toLowerCase();
+    if (st === "repaid") acc += toNum(r.amount_repaid ?? r.amount);
     return acc;
   }, 0);
 
   const loansOutstanding = loans.reduce((acc: number, r: any) => {
-    const st = (r.status ?? '').toLowerCase();
-    if (['active', 'outstanding'].includes(st)) acc += toNum(r.amount);
+    const st = (r.status ?? "").toLowerCase();
+    if (["active", "outstanding"].includes(st)) acc += toNum(r.amount);
     return acc;
   }, 0);
 
-  // outstanding dues on top cards if you need it:
-  // const outstandingDues = finesUnpaid + loansOutstanding;
+  const outstandingDues = finesUnpaid + loansOutstanding;
 
-  // --- composition (left chart) ---
+  // ------- Composition blocks (left chart) -------
   const composition = [
-    { name: 'Fines Collected', value: finesPaid },
-    { name: 'Outstanding Loans', value: loansOutstanding },
+    { name: "Fines Collected", value: finesPaid },
+    { name: "Outstanding Loans", value: loansOutstanding },
   ];
 
-  // --- monthly time series (right chart) ---
+  // ------- Monthly time series (right chart) -------
   const months = lastNMonths(12);
   const m = new Map(months.map((k) => [k, { month: k, inflow: 0, outflow: 0 }]));
 
   // Inflow: fines paid_on + loans repaid_on
   for (const f of fines) {
-    if ((f.status ?? '').toLowerCase() !== 'paid') continue;
-    const d = pickDate(f, ['paid_on', 'created_at', 'issued_on']);
+    if ((f.status ?? "").toLowerCase() !== "paid") continue;
+    const d = pickDate(f, ["paid_on", "created_at", "issued_on"]);
     if (!d) continue;
     const k = ym(d);
     if (!m.has(k)) continue;
     m.get(k)!.inflow += toNum(f.amount);
   }
   for (const l of loans) {
-    if ((l.status ?? '').toLowerCase() !== 'repaid') continue;
-    const d = pickDate(l, ['repaid_on', 'created_at']);
+    if ((l.status ?? "").toLowerCase() !== "repaid") continue;
+    const d = pickDate(l, ["repaid_on", "created_at"]);
     if (!d) continue;
     const k = ym(d);
     if (!m.has(k)) continue;
@@ -127,9 +132,9 @@ export default async function FinancePage() {
 
   // Outflow: loans issued_on
   for (const l of loans) {
-    const st = (l.status ?? '').toLowerCase();
-    if (!['issued', 'active', 'outstanding'].includes(st)) continue;
-    const d = pickDate(l, ['issued_on', 'created_at']);
+    const st = (l.status ?? "").toLowerCase();
+    if (!["issued", "active", "outstanding"].includes(st)) continue;
+    const d = pickDate(l, ["issued_on", "created_at"]);
     if (!d) continue;
     const k = ym(d);
     if (!m.has(k)) continue;
@@ -138,19 +143,21 @@ export default async function FinancePage() {
 
   const monthly = months.map((k) => m.get(k)!);
 
+  // ------- UI -------
   return (
-    <div className="p-6 space-y-8">
+    <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Financial Overview</h1>
         <div className="text-xs text-neutral-400">Range: Last 12 months</div>
       </div>
 
       {/* Top metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <MetricCard title="Fines Collected" value={formatCurrency(finesPaid, 'XAF')} hint="Paid fines" />
-        <MetricCard title="Loans Issued" value={formatCurrency(loansIssued, 'XAF')} hint="Disbursed principal" />
-        <MetricCard title="Loans Repaid" value={formatCurrency(loansRepaid, 'XAF')} hint="Recovered principal" />
-        <MetricCard title="Loans Outstanding" value={formatCurrency(loansOutstanding, 'XAF')} hint="Active balances" />
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+        <MetricCard title="Fines Collected" value={formatCurrency(finesPaid)} hint="Paid fines" />
+        <MetricCard title="Loans Issued" value={formatCurrency(loansIssued)} hint="Disbursed principal" />
+        <MetricCard title="Loans Repaid" value={formatCurrency(loansRepaid)} hint="Recovered principal" />
+        <MetricCard title="Loans Outstanding" value={formatCurrency(loansOutstanding)} hint="Active balances" />
+        <MetricCard title="Outstanding Dues" value={formatCurrency(outstandingDues)} hint="Unpaid fines + active loans" />
       </div>
 
       {/* Charts */}
@@ -159,21 +166,26 @@ export default async function FinancePage() {
         <MonthlyInOutChart data={monthly} />
       </div>
 
-      {/* Client-side fines table + actions */}
+      {/* Admin actions for fines */}
       <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Fines (Admin Controls)</h2>
-          <div className="text-xs text-neutral-500">
-            Mark Paid / Disburse / View History — (sysadmin &amp; secretary only)
-          </div>
-        </div>
+        <h2 className="text-lg font-semibold">Fines Admin</h2>
+        <p className="text-sm text-white/60">
+          Issue fines (Secretary/SysAdmin), and mark fines as <em>Paid</em> when received.
+          These updates reflect here and on the Dashboard automatically.
+        </p>
         <ClientFinesTable />
       </section>
+
+      {/* Footer note */}
+      <div className="text-xs text-neutral-500">
+        Data derived directly from <code>fines</code> and <code>loans</code> (fields tolerated:{" "}
+        <code>amount</code>, <code>status</code>, <code>paid_on</code>, <code>issued_on</code>,{" "}
+        <code>repaid_on</code>, <code>amount_repaid</code>, <code>created_at</code>).
+      </div>
     </div>
   );
 }
 
-/* ---------------------------------- UI bits --------------------------------- */
 function MetricCard({
   title,
   value,
