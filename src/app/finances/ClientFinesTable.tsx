@@ -4,10 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase as supabaseMaybe } from "@/lib/supabase";
 import { formatCurrency } from "@/lib/format";
 
+// Works whether you export a client or a factory function from lib/supabase
 function sbClient() {
-  // @ts-expect-error – support both shapes of supabase export
-  const s = typeof supabaseMaybe === "function" ? supabaseMaybe() : supabaseMaybe;
-  return s;
+  const maybe: any = supabaseMaybe as any;
+  return typeof maybe === "function" ? maybe() : maybe;
 }
 
 type FineRow = {
@@ -43,7 +43,6 @@ export default function ClientFinesTable() {
     setErr(null);
     try {
       const s = sbClient();
-      // If you have a members view with names, you can select it; otherwise fallback to member_id.
       const { data, error } = await s
         .from("fines")
         .select("id, member_id, amount, status, reason, issued_on, created_at, paid_on, paid_amount, date")
@@ -251,7 +250,7 @@ export default function ClientFinesTable() {
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between px-4 py-2 text-xs text-white/60 border-t border-white/10">
+      <div className="flex items-center justify-between px-4 py-2 text-xs text-white/60 border-top border-white/10">
         <div>Showing {filtered.length} record(s)</div>
       </div>
 
