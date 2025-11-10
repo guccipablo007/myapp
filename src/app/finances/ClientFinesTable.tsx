@@ -209,7 +209,7 @@ export default function ClientFinesTable() {
                 <tr key={f.id} className="hover:bg-white/5">
                   <td className="py-2 px-4">{dateTxt}</td>
                   <td className="py-2 px-4">{member}</td>
-                  <td className="py-2 px-4">{formatCurrency(f.amount, "XAF")}</td>
+                  <td className="py-2 px-4">{formatCurrency(f.amount)}</td>
                   <td className="py-2 px-4">
                     <span className={`rounded-full px-2 py-0.5 text-xs uppercase tracking-wide border ${statusChip}`}>
                       {f.status}
