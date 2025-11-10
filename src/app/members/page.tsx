@@ -1,12 +1,10 @@
-// src/app/members/page.tsx
 import Link from "next/link";
 import { supabase as supabaseMaybe } from "@/lib/supabase";
 import ClientAvatar from "./ClientAvatar";
 
 /** Support both shapes of your supabase export (factory or already-made client). */
 function sb() {
-  // @ts-expect-error tolerate either a function or a client object
-  const s = typeof supabaseMaybe === "function" ? supabaseMaybe() : supabaseMaybe;
+  const s: any = typeof supabaseMaybe === "function" ? (supabaseMaybe as any)() : (supabaseMaybe as any);
   return s;
 }
 
@@ -110,9 +108,7 @@ export default async function MembersPage() {
               </tr>
             ) : (
               members.map((m) => {
-                const joined = m.created_at
-                  ? new Date(m.created_at).toLocaleDateString()
-                  : "—";
+                const joined = m.created_at ? new Date(m.created_at).toLocaleDateString() : "—";
                 const name = m.full_name ?? "—";
                 const email = m.email ?? "—";
                 const role = m.role ?? "member";
@@ -125,11 +121,7 @@ export default async function MembersPage() {
                     className="border-t border-neutral-800 hover:bg-neutral-900/40"
                   >
                     <Td>
-                      <ClientAvatar
-                        candidates={candidates}
-                        fallbackName={name}
-                        size={36}
-                      />
+                      <ClientAvatar candidates={candidates} fallbackName={name} size={36} />
                     </Td>
                     <Td className="font-medium">{name}</Td>
                     <Td className="text-neutral-300">{email}</Td>
@@ -177,8 +169,7 @@ export default async function MembersPage() {
       {/* Tiny helper for users: where to upload their avatar */}
       <p className="mt-3 text-xs text-neutral-500">
         Tip: Avatars are loaded from the <code>avatars</code> storage bucket using file names like{" "}
-        <code>{`<member_id>.png|jpg|jpeg|webp`}</code>. (Example: <code>2c0f...</code>
-        <code>.png</code>)
+        <code>{`<member_id>.png|jpg|jpeg|webp`}</code>.
       </p>
     </div>
   );
@@ -194,9 +185,7 @@ function Th({
   className?: string;
 }) {
   return (
-    <th
-      className={`text-left font-semibold text-xs uppercase tracking-wide px-4 py-3 ${className}`}
-    >
+    <th className={`text-left font-semibold text-xs uppercase tracking-wide px-4 py-3 ${className}`}>
       {children}
     </th>
   );
