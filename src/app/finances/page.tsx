@@ -1,299 +1,193 @@
-'use client';
+import { formatCurrency } from '@/lib/format';
+import { supabase as supabaseMaybe } from '@/lib/supabase';
+import { MonthlyInOutChart, CompositionChart } from './ClientCharts';
+import ClientFinesTable from './ClientFinesTable';
 
-import { useEffect, useMemo, useState } from 'react';
-import { supabase } from '@/lib/supabase';
-import {
-  PieChart,
-  Pie,
-  Cell,
-  Tooltip,
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Legend,
-} from 'recharts';
-import { fmtCFA } from '@/lib/format';
+/* ------------------------------ Supabase helper ------------------------------ */
+// Supports both shapes of the supabase export in your project (factory or client)
+function sb() {
+  // @ts-expect-error – support function export or client object
+  const s = typeof supabaseMaybe === 'function' ? supabaseMaybe() : supabaseMaybe;
+  return s;
+}
 
-type RangeKey = '12m' | '6m' | '3m';
-const RANGE_OPTS: { key: RangeKey; label: string; months: number }[] = [
-  { key: '12m', label: 'Last 12 months', months: 12 },
-  { key: '6m', label: 'Last 6 months', months: 6 },
-  { key: '3m', label: 'Last 3 months', months: 3 },
-];
+/* ------------------------------- Date helpers -------------------------------- */
+function pickDate(row: Record<string, any>, fields: string[]): Date | null {
+  for (const f of fields) {
+    const val = row?.[f];
+    if (!val) continue;
+    const d = new Date(val);
+    if (!isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+function ym(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+function lastNMonths(n = 12): string[] {
+  const out: string[] = [];
+  const base = new Date();
+  base.setDate(1);
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(base);
+    d.setMonth(base.getMonth() - i);
+    out.push(ym(d));
+  }
+  return out;
+}
+const toNum = (x: any) => (typeof x === 'number' ? x : parseFloat(x ?? 0)) || 0;
 
-type CashPoint = { month: string; inflow: number; outflow: number };
+/* ============================== Server component ============================= */
+export default async function FinancePage() {
+  const s = sb();
 
-export default function FinancesPage() {
-  const [range, setRange] = useState<RangeKey>('12m');
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  // --- fetch raw rows used for metrics/charts (tolerant columns) ---
+  const [finesRes, loansRes] = await Promise.all([
+    s.from('fines').select('amount,status,paid_on,issued_on,created_at'),
+    s.from('loans').select('amount,amount_repaid,status,issued_on,repaid_on,created_at'),
+  ]);
 
-  // Tiles
-  const [finesCollected, setFinesCollected] = useState(0);
-  const [finesUnpaid, setFinesUnpaid] = useState(0);
-  const [loansIssued, setLoansIssued] = useState(0);
-  const [loansRepaid, setLoansRepaid] = useState(0);
-  const [loansOutstanding, setLoansOutstanding] = useState(0);
-
-  // Charts
-  const [pieData, setPieData] = useState<{ name: string; value: number }[]>([]);
-  const [cashFlow, setCashFlow] = useState<CashPoint[]>([]);
-
-  useEffect(() => {
-    void loadAll();
-  }, [range]);
-
-  async function loadAll() {
-    setLoading(true);
-    setErr(null);
-
-    const sb = supabase(); // ← get the client instance
-
-    try {
-      const months = RANGE_OPTS.find((r) => r.key === range)!.months;
-      const fromDate = monthsToStartDate(months);
-
-      // ---- FINES ----
-      // expected columns in public.fines:
-      // amount (numeric), status ('paid'|'unpaid'), paid_on (date)
-      let finesPaidQ = sb.from('fines').select('amount, paid_on, status').eq('status', 'paid');
-      if (fromDate) finesPaidQ = finesPaidQ.gte('paid_on', fromDate.toISOString().slice(0, 10));
-      const finesPaid = await finesPaidQ;
-
-      const finesUnpaidQ = await sb
-        .from('fines')
-        .select('amount, status')
-        .eq('status', 'unpaid');
-      if (finesPaid.error) throw new Error(finesPaid.error.message);
-      if (finesUnpaidQ.error) throw new Error(finesUnpaidQ.error.message);
-
-      const finesCollectedSum =
-        finesPaid.data?.reduce((t: number, x: any) => t + Number(x.amount ?? 0), 0) ?? 0;
-      const finesUnpaidSum =
-        finesUnpaidQ.data?.reduce((t: number, x: any) => t + Number(x.amount ?? 0), 0) ?? 0;
-
-      setFinesCollected(finesCollectedSum);
-      setFinesUnpaid(finesUnpaidSum);
-
-      // ---- LOANS ----
-      // expected columns in public.loans:
-      // principal (numeric), issued_on (date), status ('issued'|'repaid'|'outstanding')
-      let loansIssuedQ = sb
-        .from('loans')
-        .select('principal, issued_on, status')
-        .in('status', ['issued', 'repaid', 'outstanding']);
-      if (fromDate)
-        loansIssuedQ = loansIssuedQ.gte('issued_on', fromDate.toISOString().slice(0, 10));
-      const loansRows = await loansIssuedQ;
-      if (loansRows.error) throw new Error(loansRows.error.message);
-
-      const issued = loansRows.data ?? [];
-      const loansIssuedSum = issued.reduce(
-        (t: number, r: any) => t + Number(r.principal ?? 0),
-        0
-      );
-      const loansRepaidSum = issued
-        .filter((r: any) => r.status === 'repaid')
-        .reduce((t: number, r: any) => t + Number(r.principal ?? 0), 0);
-      const loansOutstandingSum = issued
-        .filter((r: any) => r.status === 'outstanding')
-        .reduce((t: number, r: any) => t + Number(r.principal ?? 0), 0);
-
-      setLoansIssued(loansIssuedSum);
-      setLoansRepaid(loansRepaidSum);
-      setLoansOutstanding(loansOutstandingSum);
-
-      // ---- PIE (composition) ----
-      setPieData([
-        { name: 'Fines Collected', value: finesCollectedSum },
-        { name: 'Outstanding Loans', value: loansOutstandingSum },
-      ]);
-
-      // ---- CASH FLOW (per month) ----
-      // Inflow: fines paid; Outflow: loans principal (issued+repaid both represent cash leaving when issued;
-      // if your accounting treats “repaid” as inflow, switch accordingly).
-      const finedPaidByMonth = bucketByMonth(
-        finesPaid.data ?? [],
-        'paid_on',
-        (x: any) => Number(x.amount ?? 0)
-      );
-
-      const loansOutflowByMonth = bucketByMonth(
-        issued,
-        'issued_on',
-        (x: any) => Number(x.principal ?? 0)
-      );
-
-      // Merge into a single array for selected range
-      const monthsKeys = monthsBackKeys(months);
-      const flow: CashPoint[] = monthsKeys.map((label) => ({
-        month: label,
-        inflow: finedPaidByMonth[label] ?? 0,
-        outflow: loansOutflowByMonth[label] ?? 0,
-      }));
-
-      setCashFlow(flow);
-    } catch (e: any) {
-      setErr(e.message ?? String(e));
-    } finally {
-      setLoading(false);
-    }
+  if (finesRes.error) {
+    return (
+      <div className="p-6">
+        <h1 className="text-xl font-semibold mb-4">Financial Overview</h1>
+        <p className="text-red-400">Error (fines): {finesRes.error.message}</p>
+      </div>
+    );
+  }
+  if (loansRes.error) {
+    return (
+      <div className="p-6">
+        <h1 className="text-xl font-semibold mb-4">Financial Overview</h1>
+        <p className="text-red-400">Error (loans): {loansRes.error.message}</p>
+      </div>
+    );
   }
 
-  const rangeLabel = RANGE_OPTS.find((r) => r.key === range)!.label;
+  const fines = finesRes.data ?? [];
+  const loans = loansRes.data ?? [];
 
-  return (
-    <div className="p-6 md:p-8 space-y-6">
-      <div className="flex items-end justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Financial Overview</h1>
-          <p className="text-sm opacity-70">Totals, composition, and monthly cash flow.</p>
-        </div>
+  // --- totals ---
+  const finesPaid = fines
+    .filter((f: any) => (f.status ?? '').toLowerCase() === 'paid')
+    .reduce((acc: number, f: any) => acc + toNum(f.amount), 0);
 
-        <div className="flex items-center gap-2 text-sm">
-          <span className="opacity-60">Range:</span>
-          <select
-            value={range}
-            onChange={(e) => setRange(e.target.value as RangeKey)}
-            className="bg-zinc-900 border border-zinc-700 rounded px-3 py-2"
-          >
-            {RANGE_OPTS.map((r) => (
-              <option key={r.key} value={r.key}>
-                {r.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
+  const finesUnpaid = fines
+    .filter((f: any) => (f.status ?? '').toLowerCase() === 'unpaid')
+    .reduce((acc: number, f: any) => acc + toNum(f.amount), 0);
 
-      {/* TILES */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-        <Tile label="Fines Collected" value={fmtCFA(finesCollected)} icon="🟩" />
-        <Tile label="Fines Unpaid" value={fmtCFA(finesUnpaid)} icon="🟪" />
-        <Tile label="Loans Issued" value={fmtCFA(loansIssued)} icon="🏦" />
-        <Tile label="Loans Repaid" value={fmtCFA(loansRepaid)} icon="📘" />
-        <Tile label="Loans Outstanding" value={fmtCFA(loansOutstanding)} icon="⏳" />
-      </div>
+  const loansIssued = loans.reduce((acc: number, r: any) => {
+    const st = (r.status ?? '').toLowerCase();
+    if (['issued', 'active', 'outstanding'].includes(st)) acc += toNum(r.amount);
+    return acc;
+  }, 0);
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* PIE */}
-        <div className="border border-zinc-800 rounded-xl p-4">
-          <h3 className="text-sm opacity-70 mb-2">Composition</h3>
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={pieData}
-                  dataKey="value"
-                  cx="50%"
-                  cy="50%"
-                  outerRadius={90}
-                  label={(d: any) => `${d.name}: ${fmtCFA(d.value)}`}
-                >
-                  <Cell fill="#22c55e" />
-                  <Cell fill="#eab308" />
-                </Pie>
-                <Tooltip formatter={(v: any) => fmtCFA(Number(v))} />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
+  const loansRepaid = loans.reduce((acc: number, r: any) => {
+    const st = (r.status ?? '').toLowerCase();
+    if (st === 'repaid') acc += toNum(r.amount_repaid ?? r.amount);
+    return acc;
+  }, 0);
 
-          <div className="flex items-center gap-4 mt-3 text-sm">
-            <LegendDot color="#22c55e" label="Fines Collected" />
-            <LegendDot color="#eab308" label="Outstanding Loans" />
-          </div>
-        </div>
+  const loansOutstanding = loans.reduce((acc: number, r: any) => {
+    const st = (r.status ?? '').toLowerCase();
+    if (['active', 'outstanding'].includes(st)) acc += toNum(r.amount);
+    return acc;
+  }, 0);
 
-        {/* LINE */}
-        <div className="border border-zinc-800 rounded-xl p-4">
-          <h3 className="text-sm opacity-70 mb-2">Monthly Cash Flow</h3>
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={cashFlow}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-                <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip
-                  formatter={(v: any) => fmtCFA(Number(v))}
-                  labelFormatter={(label) => `${label} (${rangeLabel})`}
-                />
-                <Legend />
-                <Line type="monotone" dataKey="inflow" name="Inflow" stroke="#22c55e" dot={false} />
-                <Line type="monotone" dataKey="outflow" name="Outflow" stroke="#eab308" dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
+  // outstanding dues on top cards if you need it:
+  // const outstandingDues = finesUnpaid + loansOutstanding;
 
-      {loading && <div className="text-sm opacity-70">Loading…</div>}
-      {err && <div className="text-sm text-red-400">Error: {err}</div>}
-    </div>
-  );
-}
+  // --- composition (left chart) ---
+  const composition = [
+    { name: 'Fines Collected', value: finesPaid },
+    { name: 'Outstanding Loans', value: loansOutstanding },
+  ];
 
-function Tile({ label, value, icon }: { label: string; value: string; icon: string }) {
-  return (
-    <div className="border border-zinc-800 rounded-xl p-4">
-      <div className="text-sm opacity-70 flex items-center gap-2">
-        <span className="text-base">{icon}</span>
-        {label}
-      </div>
-      <div className="mt-2 text-2xl font-semibold">{value}</div>
-    </div>
-  );
-}
+  // --- monthly time series (right chart) ---
+  const months = lastNMonths(12);
+  const m = new Map(months.map((k) => [k, { month: k, inflow: 0, outflow: 0 }]));
 
-function LegendDot({ color, label }: { color: string; label: string }) {
-  return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="inline-block w-3 h-3 rounded" style={{ background: color }} />
-      {label}
-    </div>
-  );
-}
-
-/* ---------- helpers ---------- */
-
-function monthsToStartDate(months: number): Date | null {
-  const d = new Date();
-  // go to first day of this month, then back (months-1)
-  d.setDate(1);
-  d.setMonth(d.getMonth() - (months - 1));
-  return d;
-}
-
-function labelOf(date: Date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-}
-
-function monthsBackKeys(months: number): string[] {
-  const now = new Date();
-  const arr: string[] = [];
-  for (let i = months - 1; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    arr.push(labelOf(d));
+  // Inflow: fines paid_on + loans repaid_on
+  for (const f of fines) {
+    if ((f.status ?? '').toLowerCase() !== 'paid') continue;
+    const d = pickDate(f, ['paid_on', 'created_at', 'issued_on']);
+    if (!d) continue;
+    const k = ym(d);
+    if (!m.has(k)) continue;
+    m.get(k)!.inflow += toNum(f.amount);
   }
-  return arr;
+  for (const l of loans) {
+    if ((l.status ?? '').toLowerCase() !== 'repaid') continue;
+    const d = pickDate(l, ['repaid_on', 'created_at']);
+    if (!d) continue;
+    const k = ym(d);
+    if (!m.has(k)) continue;
+    m.get(k)!.inflow += toNum(l.amount_repaid ?? l.amount);
+  }
+
+  // Outflow: loans issued_on
+  for (const l of loans) {
+    const st = (l.status ?? '').toLowerCase();
+    if (!['issued', 'active', 'outstanding'].includes(st)) continue;
+    const d = pickDate(l, ['issued_on', 'created_at']);
+    if (!d) continue;
+    const k = ym(d);
+    if (!m.has(k)) continue;
+    m.get(k)!.outflow += toNum(l.amount);
+  }
+
+  const monthly = months.map((k) => m.get(k)!);
+
+  return (
+    <div className="p-6 space-y-8">
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold">Financial Overview</h1>
+        <div className="text-xs text-neutral-400">Range: Last 12 months</div>
+      </div>
+
+      {/* Top metrics */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <MetricCard title="Fines Collected" value={formatCurrency(finesPaid, 'XAF')} hint="Paid fines" />
+        <MetricCard title="Loans Issued" value={formatCurrency(loansIssued, 'XAF')} hint="Disbursed principal" />
+        <MetricCard title="Loans Repaid" value={formatCurrency(loansRepaid, 'XAF')} hint="Recovered principal" />
+        <MetricCard title="Loans Outstanding" value={formatCurrency(loansOutstanding, 'XAF')} hint="Active balances" />
+      </div>
+
+      {/* Charts */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <CompositionChart data={composition} />
+        <MonthlyInOutChart data={monthly} />
+      </div>
+
+      {/* Client-side fines table + actions */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Fines (Admin Controls)</h2>
+          <div className="text-xs text-neutral-500">
+            Mark Paid / Disburse / View History — (sysadmin &amp; secretary only)
+          </div>
+        </div>
+        <ClientFinesTable />
+      </section>
+    </div>
+  );
 }
 
-function bucketByMonth(
-  rows: any[],
-  dateField: string,
-  amountGetter: (row: any) => number
-): Record<string, number> {
-  const map: Record<string, number> = {};
-  rows.forEach((r) => {
-    const raw = r[dateField];
-    if (!raw) return;
-    // support 'YYYY-MM-DD' or Date
-    const d = typeof raw === 'string' ? new Date(raw) : (raw as Date);
-    if (isNaN(d.getTime())) return;
-    const k = labelOf(new Date(d.getFullYear(), d.getMonth(), 1));
-    map[k] = (map[k] ?? 0) + amountGetter(r);
-  });
-  return map;
+/* ---------------------------------- UI bits --------------------------------- */
+function MetricCard({
+  title,
+  value,
+  hint,
+}: {
+  title: string;
+  value: string | number;
+  hint?: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-neutral-800 p-4">
+      <div className="text-sm text-neutral-400">{title}</div>
+      <div className="text-2xl font-semibold mt-1">{value}</div>
+      {hint ? <div className="text-xs text-neutral-500 mt-1">{hint}</div> : null}
+    </div>
+  );
 }

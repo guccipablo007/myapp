@@ -1,38 +1,24 @@
 // src/lib/format.ts
 
-/**
- * Format a number as Central African Francs (FCFA) with no decimals.
- * Falls back gracefully if input is null/undefined/NaN.
- */
-export function formatCurrency(n: number | null | undefined): string {
-  const value = Number(n || 0);
-  // Locale + currency picked to render "FCFA" style
-  const s = new Intl.NumberFormat('fr-CM', {
-    style: 'currency',
-    currency: 'XAF',
-    maximumFractionDigits: 0,
-  }).format(value);
-
-  // Some environments put currency after number or with non-breaking spaces.
-  // Normalize to "FCFA 12 345" (FCFA first).
-  const normalized = s
-    .replace(/\u00A0/g, ' ')        // NBSP -> space
-    .replace(/FCFA\s?/i, '')        // remove existing FCFA if trailing
-    .trim();
-
-  return `FCFA ${normalized}`;
+/** Formats numbers with thousand separators (e.g., 12 345 → "12,345") */
+export function formatNumber(value: number | string): string {
+  const num = Number(value) || 0;
+  return num.toLocaleString(undefined, { maximumFractionDigits: 0 });
 }
 
-/**
- * Simple number formatter for counts (no decimals).
- */
-export function formatNumber(n: number | null | undefined): string {
-  const value = Number(n || 0);
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
+/** CFA or other currency formatting with fallback */
+export function formatCurrency(value: number, currency: string = 'XAF'): string {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency,
+      maximumFractionDigits: 0,
+    }).format(value || 0);
+  } catch {
+    // If Intl can't render that currency in this runtime, fall back
+    return `${(value || 0).toLocaleString()} ${currency}`;
+  }
 }
 
-/**
- * Backward-compat alias so legacy imports keep working:
- *   import { fmtCFA } from '@/lib/format'
- */
-export const fmtCFA = formatCurrency;
+/** Alias kept for backward compatibility */
+export const fmtCFA = (v: number) => formatCurrency(v, 'XAF');
