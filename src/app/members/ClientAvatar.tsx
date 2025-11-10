@@ -1,57 +1,65 @@
-// src/app/members/ClientAvatar.tsx
 "use client";
 
-import { useState, useMemo } from "react";
+import * as React from "react";
 
-/**
- * Tries a list of image URLs in order. If all fail, shows initials.
- */
+type Props = {
+  /** Ordered list of possible public avatar URLs (we’ll try each until one loads) */
+  candidates: string[];
+  /** Fallback name used to draw initials if no image loads */
+  fallbackName: string;
+  /** Size in pixels (both width & height) */
+  size?: number;
+  className?: string;
+};
+
+function initials(name: string) {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "?";
+  const first = parts[0]?.[0] || "";
+  const last = parts.length > 1 ? parts[parts.length - 1][0] : "";
+  return (first + last).toUpperCase();
+}
+
 export default function ClientAvatar({
   candidates,
   fallbackName,
-  size = 36,
-}: {
-  candidates: string[];
-  fallbackName?: string | null;
-  size?: number;
-}) {
-  const initials = useMemo(() => {
-    const f = fallbackName ?? "";
-    const ini =
-      f
-        .split(" ")
-        .map((p) => p[0])
-        .filter(Boolean)
-        .slice(0, 2)
-        .join("")
-        .toUpperCase() || "M";
-    return ini;
-  }, [fallbackName]);
+  size = 40,
+  className = "",
+}: Props) {
+  const [idx, setIdx] = React.useState(0);
+  const urls = Array.isArray(candidates) ? candidates.filter(Boolean) : [];
+  const url = urls[idx];
 
-  const [idx, setIdx] = useState(0);
-  const src = candidates[idx];
+  // When current URL fails, advance to next
+  const onError = () => {
+    if (idx < urls.length - 1) setIdx(idx + 1);
+  };
 
-  if (!src) {
+  const diameter = `${size}px`;
+
+  // If we still have a URL to try, show it
+  if (url) {
     return (
-      <div
-        className="rounded-full bg-neutral-800 text-neutral-200 grid place-items-center text-xs font-semibold"
-        style={{ width: size, height: size }}
-        title={fallbackName ?? "Member"}
-      >
-        {initials}
-      </div>
+      <img
+        src={url}
+        alt={fallbackName || "avatar"}
+        width={size}
+        height={size}
+        onError={onError}
+        className={`rounded-full object-cover border border-neutral-800 ${className}`}
+        style={{ width: diameter, height: diameter }}
+      />
     );
   }
 
+  // Fallback: initials
   return (
-    <img
-      src={src}
-      width={size}
-      height={size}
-      alt={fallbackName ?? "avatar"}
-      onError={() => setIdx((i) => (i + 1 < candidates.length ? i + 1 : i + 1))}
-      className="rounded-full object-cover"
-      style={{ width: size, height: size }}
-    />
+    <div
+      className={`rounded-full grid place-items-center bg-neutral-900/60 border border-neutral-800 ${className}`}
+      style={{ width: diameter, height: diameter }}
+      title={fallbackName}
+    >
+      <span className="text-xs text-neutral-300">{initials(fallbackName)}</span>
+    </div>
   );
 }
