@@ -47,8 +47,12 @@ export default function MeetingModal({
 
       if (error) throw error;
       setRows(data ?? []);
-    } catch (e: any) {
-      setErr(e?.message ?? 'Failed to list files');
+    } catch (e) {
+      let message = 'Failed to list files';
+      if (e instanceof Error) {
+        message = e.message;
+      }
+      setErr(message);
       setRows([]);
     } finally {
       setLoading(false);
@@ -74,8 +78,12 @@ export default function MeetingModal({
         const { data } = sb.storage.from('attachments').getPublicUrl(path);
         if (data?.publicUrl) window.open(data.publicUrl, '_blank');
       }
-    } catch (e: any) {
-      setErr(e?.message ?? 'Download failed');
+    } catch (e) {
+      let message = 'Download failed';
+      if (e instanceof Error) {
+        message = e.message;
+      }
+      setErr(message);
     }
   };
 
@@ -87,8 +95,12 @@ export default function MeetingModal({
       const { error } = await sb.storage.from('attachments').remove([path]);
       if (error) throw error;
       await listFiles();
-    } catch (e: any) {
-      setErr(e?.message ?? 'Delete failed');
+    } catch (e) {
+      let message = 'Delete failed';
+      if (e instanceof Error) {
+        message = e.message;
+      }
+      setErr(message);
     }
   };
 

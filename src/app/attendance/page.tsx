@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
 type Meeting = { id: number; title?: string | null; date?: string | null };
-type Member = { id: number; full_name: string };
 type Status = 'present' | 'absent' | 'leave';
 
 type SelRow = {
@@ -13,7 +12,7 @@ type SelRow = {
   status: Status | null;
 };
 
-function downloadCSV(filename: string, rows: { [k: string]: any }[]) {
+function downloadCSV(filename: string, rows: { [k: string]: unknown }[]) {
   if (!rows.length) return;
   const headers = Object.keys(rows[0]);
   const csv =

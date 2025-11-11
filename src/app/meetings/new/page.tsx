@@ -16,7 +16,7 @@ export default function NewMeetingPage() {
   async function save() {
     setSaving(true);
     setErr(null);
-    const { data, error } = await sb
+    const { error } = await sb
       .from('meetings')
       .insert([{ title: title || 'Untitled meeting', date, notes }])
       .select('id')

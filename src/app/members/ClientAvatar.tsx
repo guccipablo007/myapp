@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Image from "next/image";
 
 type Props = {
   /** Ordered list of possible public avatar URLs (we’ll try each until one loads) */
@@ -40,7 +41,7 @@ export default function ClientAvatar({
   // If we still have a URL to try, show it
   if (url) {
     return (
-      <img
+      <Image
         src={url}
         alt={fallbackName || "avatar"}
         width={size}

@@ -19,9 +19,13 @@ export default function ForgotPasswordPage() {
       if (error) throw error;
       setStatus('sent');
       setMsg('Password reset email sent. Check your inbox.');
-    } catch (err: any) {
+    } catch (err) {
       setStatus('error');
-      setMsg(err.message ?? 'Something went wrong.');
+      let message = 'An unknown error occurred.';
+      if (err instanceof Error) {
+        message = err.message;
+      }
+      setMsg(message);
     }
   }
 

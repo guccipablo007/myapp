@@ -1,15 +1,18 @@
 // src/lib/userRole.ts
 export type AppRole = 'sysadmin' | 'secretary' | 'member' | 'guest';
 
-import { supabase as supabaseMaybe } from '@/lib/supabase';
+import { supabase as supabaseMaybe, SupabaseClient } from '@/lib/supabase';
 
-function sb() {
-  const maybe: any = supabaseMaybe as any;
-  return typeof maybe === 'function' ? maybe() : maybe;
+function sb(): SupabaseClient {
+  const maybe: unknown = supabaseMaybe;
+  if (typeof maybe === "function") {
+    return maybe();
+  }
+  return maybe as SupabaseClient;
 }
 
 export async function getCurrentUserRole(): Promise<AppRole> {
-  const s: any = sb();
+  const s = sb();
 
   // 1) Prefer Postgres RPC if you have a function `public.current_role()`
   try {
@@ -21,7 +24,7 @@ export async function getCurrentUserRole(): Promise<AppRole> {
         return 'guest';
       }
     }
-  } catch (_) {
+  } catch {
     // fall through
   }
 
@@ -43,7 +46,7 @@ export async function getCurrentUserRole(): Promise<AppRole> {
         }
       }
     }
-  } catch (_) {
+  } catch {
     // fall through
   }
 

@@ -4,11 +4,14 @@
 import { useState } from "react";
 import { supabase as supabaseMaybe } from "@/lib/supabase";
 import { getCurrentUserRole } from "@/lib/userRole";
+import { SupabaseClient } from "@supabase/supabase-js";
 
-function sb() {
-  // supports both: client or factory
-  // @ts-ignore
-  return typeof supabaseMaybe === "function" ? supabaseMaybe() : supabaseMaybe;
+function sb(): SupabaseClient {
+  const s: unknown = supabaseMaybe;
+  if (typeof s === "function") {
+    return s();
+  }
+  return s as SupabaseClient;
 }
 
 export type FineRow = {
@@ -27,7 +30,7 @@ export function FineActions({ fine, onChanged }: { fine: FineRow; onChanged?: ()
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
-  const [hist, setHist] = useState<any[]>([]);
+  const [hist, setHist] = useState<{ id: number; disbursed_on: string; note: string; amount: number }[]>([]);
   const [role, setRole] = useState<"guest"|"sysadmin"|"secretary"|"member">("guest");
 
   // Resolve role once (lazy)
@@ -53,8 +56,12 @@ export function FineActions({ fine, onChanged }: { fine: FineRow; onChanged?: ()
       }).eq("id", fine.id).single();
       if (error) throw error;
       onChanged?.();
-    } catch (e:any) {
-      setErr(e?.message || "Failed to mark as paid");
+    } catch (e) {
+      let message = "Failed to mark as paid";
+      if (e instanceof Error) {
+        message = e.message;
+      }
+      setErr(message);
     } finally { setBusy(false); }
   }
 
@@ -75,8 +82,12 @@ export function FineActions({ fine, onChanged }: { fine: FineRow; onChanged?: ()
       });
       if (error) throw error;
       onChanged?.();
-    } catch (e:any) {
-      setErr(e?.message || "Failed to create disbursement");
+    } catch (e) {
+      let message = "Failed to create disbursement";
+      if (e instanceof Error) {
+        message = e.message;
+      }
+      setErr(message);
     } finally { setBusy(false); }
   }
 
@@ -91,8 +102,12 @@ export function FineActions({ fine, onChanged }: { fine: FineRow; onChanged?: ()
       if (error) throw error;
       setHist(data || []);
       setShowHistory(true);
-    } catch (e:any) {
-      setErr(e?.message || "Failed to load history");
+    } catch (e) {
+      let message = "Failed to load history";
+      if (e instanceof Error) {
+        message = e.message;
+      }
+      setErr(message);
     } finally { setBusy(false); }
   }
 

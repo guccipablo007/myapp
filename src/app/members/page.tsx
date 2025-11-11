@@ -1,11 +1,14 @@
 import Link from "next/link";
-import { supabase as supabaseMaybe } from "@/lib/supabase";
+import { supabase as supabaseMaybe, SupabaseClient } from "@/lib/supabase";
 import ClientAvatar from "./ClientAvatar";
 
 /** Support both shapes of your supabase export (factory or already-made client). */
-function sb() {
-  const s: any = typeof supabaseMaybe === "function" ? (supabaseMaybe as any)() : (supabaseMaybe as any);
-  return s;
+function sb(): SupabaseClient {
+  const s: unknown = supabaseMaybe;
+  if (typeof s === "function") {
+    return s();
+  }
+  return s as SupabaseClient;
 }
 
 type MemberRow = {

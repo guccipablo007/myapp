@@ -8,14 +8,18 @@ import {
 
 // ---- Supabase client compatibility wrapper ----
 // Works whether your lib exports a client *object* or a client *factory function*.
-import { supabase as supabaseMaybe } from '@/lib/supabase';
-function sb() {
-  const maybe: any = supabaseMaybe as any;
-  return typeof maybe === 'function' ? maybe() : maybe;
+import { supabase as supabaseMaybe, SupabaseClient } from '@/lib/supabase';
+
+function sb(): SupabaseClient {
+  const maybe: unknown = supabaseMaybe;
+  if (typeof maybe === 'function') {
+    return maybe();
+  }
+  return maybe as SupabaseClient;
 }
 
 // Optional formatting helpers you already have:
-import { formatNumber, fmtCFA as formatCurrency } from '@/lib/format';
+import { formatNumber } from '@/lib/format';
 
 // ---- Types that match the SQL views we created earlier ----
 type StatusRow = { status: 'active' | 'inactive'; total: number };
@@ -60,9 +64,13 @@ export default function GrowthPage() {
         setStatusData((s1.data || []) as StatusRow[]);
         setRoleData((s2.data || []) as RoleRow[]);
         setTenure((s3.data || null) as TenureRow | null);
-      } catch (e: any) {
+      } catch (e) {
         if (!alive) return;
-        setErr(e?.message || 'Failed to load growth data');
+        let message = 'Failed to load growth data';
+        if (e instanceof Error) {
+          message = e.message;
+        }
+        setErr(message);
       } finally {
         if (alive) setLoading(false);
       }

@@ -100,8 +100,8 @@ export default function ProjectsPage() {
     setRows(optimistic);
     setEditingId(null);
 
-    const payload = { ...draft };
-    Object.keys(payload).forEach(k => (payload as any)[k] === undefined && delete (payload as any)[k]);
+    const payload: { [key: string]: unknown } = { ...draft };
+    Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
 
     const { error } = await sb.from('projects').update(payload).eq('id', editingId);
     if (error) {
@@ -144,7 +144,7 @@ export default function ProjectsPage() {
   async function create() {
     if (!newP.name?.trim()) return alert('Name is required.');
     const payload = {
-      name: newP.name?.trim()!,
+      name: newP.name.trim(),
       budget: newP.budget ?? null,
       status: ((newP.status as Project['status']) ?? 'ongoing') as Project['status'],
       start_date: newP.start_date || null,

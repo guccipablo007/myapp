@@ -1,11 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { supabase as supabaseMaybe } from "@/lib/supabase";
+import { supabase as supabaseMaybe, SupabaseClient } from "@/lib/supabase";
 
-function sbClient() {
-  const s: any = typeof supabaseMaybe === "function" ? (supabaseMaybe as any)() : (supabaseMaybe as any);
-  return s;
+function sbClient(): SupabaseClient {
+  const s: unknown = supabaseMaybe;
+  if (typeof s === "function") {
+    return s();
+  }
+  return s as SupabaseClient;
 }
 
 type Props = {
@@ -87,8 +90,12 @@ export default function EditMemberPanel({ memberId, initial }: Props) {
       if (pub?.publicUrl) setAvatarUrl(pub.publicUrl);
 
       setMsg("Avatar uploaded.");
-    } catch (e: any) {
-      setErr(e?.message ?? "Upload failed.");
+    } catch (e) {
+      let message = "Upload failed.";
+      if (e instanceof Error) {
+        message = e.message;
+      }
+      setErr(message);
     } finally {
       setBusy(false);
       // reset the input so the same file can be reselected if needed

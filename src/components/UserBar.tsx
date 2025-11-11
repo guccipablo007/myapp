@@ -1,11 +1,18 @@
 'use client';
 import { useEffect, useState, KeyboardEvent } from 'react';
 import { supabase } from '@/lib/supabase';
+import { User } from '@supabase/supabase-js';
+import Image from 'next/image';
+
+type Profile = {
+  full_name: string;
+  role: string;
+};
 
 export default function UserBar() {
   const sb = supabase();
-  const [user, setUser] = useState<any>(null);
-  const [profile, setProfile] = useState<any>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
   const [open, setOpen] = useState(false); // mobile collapse
 
   useEffect(() => {
@@ -21,7 +28,7 @@ export default function UserBar() {
         setProfile(p ?? null);
       }
     })();
-  }, []);
+  }, [sb]);
 
   async function logout() {
     await sb.auth.signOut();
@@ -52,7 +59,7 @@ export default function UserBar() {
         title="Tap to expand on mobile"
       >
         <div className="flex items-center gap-2">
-          <img src="/avatar.png" className="w-7 h-7 rounded-full border border-zinc-700" />
+          <Image src="/avatar.png" alt="User avatar" width={28} height={28} className="w-7 h-7 rounded-full border border-zinc-700" />
           {user ? (
             <>
               <div className="font-medium">{profile?.full_name || user.email}</div>
