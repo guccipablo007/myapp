@@ -5,11 +5,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase as supabaseMaybe } from "@/lib/supabase";
 import { formatCurrency, formatNumber } from "@/lib/format";
+import { SupabaseClient } from "@supabase/supabase-js";
 
-function sb() {
-  // supports both: exported client or factory function
-  // @ts-ignore
-  return typeof supabaseMaybe === "function" ? supabaseMaybe() : supabaseMaybe;
+function sb(): SupabaseClient {
+  const s: unknown = supabaseMaybe;
+  if (typeof s === "function") {
+    return s();
+  }
+  return s as SupabaseClient;
 }
 
 type Item = {
@@ -101,7 +104,7 @@ export default function NotificationsDrawer() {
         if (gone) return;
 
         const ann: Item[] =
-          a.data?.map((r: any) => ({
+          a.data?.map((r: { id: number; title: string; created_at: string }) => ({
             id: `a:${r.id}`,
             kind: "announcement",
             title: r.title,
@@ -111,7 +114,7 @@ export default function NotificationsDrawer() {
           })) ?? [];
 
         const meets: Item[] =
-          m.data?.map((r: any) => ({
+          m.data?.map((r: { id: number; title: string; scheduled_for: string }) => ({
             id: `m:${r.id}`,
             kind: "meeting",
             title: r.title,
@@ -122,12 +125,12 @@ export default function NotificationsDrawer() {
 
         let unpaid = 0;
         if (funpaid.data) {
-          unpaid = funpaid.data.reduce((t: number, x: any) => t + Number(x.amount || 0), 0);
+          unpaid = funpaid.data.reduce((t: number, x: { amount: unknown }) => t + Number(x.amount || 0), 0);
         }
 
         let outstanding = 0;
         if (lall.data) {
-          outstanding = lall.data.reduce((t: number, x: any) => {
+          outstanding = lall.data.reduce((t: number, x: { amount_issued: unknown; amount: unknown; amount_repaid: unknown; status: unknown }) => {
             const issued = Number(x.amount_issued ?? x.amount ?? 0);
             const repaid = Number(x.amount_repaid ?? 0);
             const st = String(x.status || "").toLowerCase();
@@ -163,8 +166,12 @@ export default function NotificationsDrawer() {
         });
 
         setItems(combined);
-      } catch (e: any) {
-        setErr(e?.message || "Failed to load notifications");
+      } catch (e) {
+        let message = "Failed to load notifications";
+        if (e instanceof Error) {
+          message = e.message;
+        }
+        setErr(message);
       } finally {
         if (!gone) setLoading(false);
       }

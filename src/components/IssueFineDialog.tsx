@@ -1,11 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { supabase as supabaseMaybe } from "@/lib/supabase";
+import { supabase as supabaseMaybe, SupabaseClient } from "@/lib/supabase";
 
-function sb() {
-  const maybe: any = supabaseMaybe as any;
-  return typeof maybe === "function" ? maybe() : maybe;
+function sb(): SupabaseClient {
+  const maybe: unknown = supabaseMaybe;
+  if (typeof maybe === "function") {
+    return maybe();
+  }
+  return maybe as SupabaseClient;
 }
 
 export default function IssueFineDialog({
@@ -54,8 +57,12 @@ export default function IssueFineDialog({
       setAmount("");
       setReason("");
       onIssued?.();
-    } catch (e: any) {
-      alert(e?.message || "Failed to issue fine");
+    } catch (e) {
+      let message = "Failed to issue fine";
+      if (e instanceof Error) {
+        message = e.message;
+      }
+      alert(message);
     } finally {
       setLoading(false);
     }

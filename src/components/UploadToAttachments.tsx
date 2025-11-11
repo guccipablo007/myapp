@@ -39,8 +39,12 @@ export default function UploadToAttachments({ folder = '', show = false, onDone 
 
       if (error) throw error;
       onDone?.();
-    } catch (err: any) {
-      setErr(err?.message ?? 'Upload failed');
+    } catch (err) {
+      let message = 'Upload failed';
+      if (err instanceof Error) {
+        message = err.message;
+      }
+      setErr(message);
     } finally {
       setBusy(false);
       if (inputRef.current) inputRef.current.value = '';

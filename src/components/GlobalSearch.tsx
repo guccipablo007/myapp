@@ -3,12 +3,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { supabase as supabaseMaybe } from "@/lib/supabase";
+import { supabase as supabaseMaybe, SupabaseClient } from "@/lib/supabase";
 
-function sb() {
-  // supports both: exported client or factory function
-  // @ts-ignore
-  return typeof supabaseMaybe === "function" ? supabaseMaybe() : supabaseMaybe;
+function sb(): SupabaseClient {
+  const s: unknown = supabaseMaybe;
+  if (typeof s === "function") {
+    return s();
+  }
+  return s as SupabaseClient;
 }
 
 type GroupedResults = {
@@ -151,7 +153,7 @@ function Group({
   labelKey,
 }: {
   title: string;
-  items: any[];
+  items: { id: number; [key: string]: unknown }[];
   hrefBase: string;
   labelKey: "full_name" | "title" | "name";
 }) {

@@ -6,11 +6,15 @@ import Link from "next/link";
 import { supabase as supabaseMaybe } from "@/lib/supabase";
 import { getCurrentUserRole, type AppRole } from "@/lib/userRole";
 import { formatNumber } from "@/lib/format";
+import { SupabaseClient } from "@supabase/supabase-js";
 
-function sb() {
+function sb(): SupabaseClient {
   // supports both: exported client or factory function
-  // @ts-ignore
-  return typeof supabaseMaybe === "function" ? supabaseMaybe() : supabaseMaybe;
+  const s: unknown = supabaseMaybe;
+  if (typeof s === "function") {
+    return s();
+  }
+  return s as SupabaseClient;
 }
 
 type Announcement = {
@@ -65,8 +69,12 @@ export default function AnnouncementsPage() {
           .limit(200);
         if (error) throw error;
         if (!gone) setRows((data ?? []) as Announcement[]);
-      } catch (e: any) {
-        if (!gone) setErr(e?.message || "Failed to load announcements");
+      } catch (e) {
+        let message = "Failed to load announcements";
+        if (e instanceof Error) {
+          message = e.message;
+        }
+        if (!gone) setErr(message);
       } finally {
         if (!gone) setLoading(false);
       }
@@ -109,8 +117,12 @@ export default function AnnouncementsPage() {
       setTitle("");
       setBody("");
       setOpenForm(false);
-    } catch (e: any) {
-      setErr(e?.message || "Failed to create announcement");
+    } catch (e) {
+      let message = "Failed to create announcement";
+      if (e instanceof Error) {
+        message = e.message;
+      }
+      setErr(message);
     }
   }
 
@@ -159,8 +171,12 @@ export default function AnnouncementsPage() {
         setRows(next);
       }
       cancelEdit();
-    } catch (e: any) {
-      setErr(e?.message || "Failed to update announcement");
+    } catch (e) {
+      let message = "Failed to update announcement";
+      if (e instanceof Error) {
+        message = e.message;
+      }
+      setErr(message);
       // revert optimistic change
       setRows(prev);
     }
@@ -178,8 +194,12 @@ export default function AnnouncementsPage() {
       const { error } = await supabase.from("announcements").delete().eq("id", deleteId);
       if (error) throw error;
       setDeleteId(null);
-    } catch (e: any) {
-      setErr(e?.message || "Failed to delete announcement");
+    } catch (e) {
+      let message = "Failed to delete announcement";
+      if (e instanceof Error) {
+        message = e.message;
+      }
+      setErr(message);
       setRows(prev);
     }
   }

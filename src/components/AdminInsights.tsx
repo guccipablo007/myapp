@@ -1,14 +1,17 @@
 // src/components/AdminInsights.tsx
 import { formatCurrency, formatNumber } from "@/lib/format";
-import { supabase as supabaseMaybe } from "@/lib/supabase";
+import { supabase as supabaseMaybe, SupabaseClient } from "@/lib/supabase";
 
-function sb() {
-  const maybe: any = supabaseMaybe as any;
-  return typeof maybe === "function" ? maybe() : maybe;
+function sb(): SupabaseClient {
+  const maybe: unknown = supabaseMaybe;
+  if (typeof maybe === "function") {
+    return maybe();
+  }
+  return maybe as SupabaseClient;
 }
-const toNum = (x: any) => (typeof x === "number" ? x : parseFloat(x ?? 0)) || 0;
+const toNum = (x: unknown) => (typeof x === "number" ? x : parseFloat(String(x ?? 0))) || 0;
 
-function pickDate(row: Record<string, any>, fields: string[]): Date | null {
+function pickDate(row: Record<string, unknown>, fields: string[]): Date | null {
   for (const f of fields) {
     const v = row?.[f];
     if (!v) continue;
@@ -56,7 +59,7 @@ export default async function AdminInsights() {
   try {
     const funpaid = await s.from("fines").select("amount,status").eq("status", "unpaid");
     if (!funpaid.error && funpaid.data) {
-      finesUnpaid = funpaid.data.reduce((t: number, r: any) => t + toNum(r.amount), 0);
+      finesUnpaid = funpaid.data.reduce((t: number, r: { amount: unknown }) => t + toNum(r.amount), 0);
     }
   } catch {}
 
@@ -95,9 +98,9 @@ export default async function AdminInsights() {
       .order("scheduled_for", { ascending: true })
       .limit(1);
     if (!mq.error && mq.data?.[0]) {
-      const row = mq.data[0] as any;
+      const row = mq.data[0];
       const d = pickDate(row, ["scheduled_for", "date", "created_at"]);
-      nextMeeting = { title: row.title, when: d ? d.toLocaleString() : "-" };
+      nextMeeting = { title: row.title ?? 'Untitled', when: d ? d.toLocaleString() : "-" };
     }
   } catch {}
 

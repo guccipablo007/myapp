@@ -3,12 +3,15 @@
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { supabase as supabaseMaybe } from "@/lib/supabase";
+import { supabase as supabaseMaybe, SupabaseClient } from "@/lib/supabase";
 
 // Works whether your supabase export is a factory or a client instance
-function sb() {
-  const s: any = typeof supabaseMaybe === "function" ? (supabaseMaybe as any)() : supabaseMaybe;
-  return s;
+function sb(): SupabaseClient {
+  const s: unknown = supabaseMaybe;
+  if (typeof s === "function") {
+    return s();
+  }
+  return s as SupabaseClient;
 }
 
 export default function LoginPage() {

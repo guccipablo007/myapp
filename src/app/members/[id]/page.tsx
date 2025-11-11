@@ -1,21 +1,24 @@
-// @ts-nocheck
-// src/app/members/[id]/page.tsx
-// Disable TS constraint to bypass PageProps mismatch and ensure clean deploy.
-
 import Link from "next/link";
-import { supabase as supabaseMaybe } from "@/lib/supabase";
+import { supabase as supabaseMaybe, SupabaseClient } from "@/lib/supabase";
 import ClientAvatar from "../ClientAvatar";
 
-function sb() {
-  // tolerate either a factory function or a pre-created client
-  // @ts-expect-error – flexible supabase export
-  const s = typeof supabaseMaybe === "function" ? supabaseMaybe() : supabaseMaybe;
-  return s;
+function sb(): SupabaseClient {
+  const s: unknown = supabaseMaybe;
+  if (typeof s === "function") {
+    return s();
+  }
+  return s as SupabaseClient;
 }
 
 export const revalidate = 0;
 
-export default async function MemberDetailPage({ params }) {
+type PageProps = {
+  params: {
+    id: string;
+  };
+};
+
+export default async function MemberDetailPage({ params }: PageProps) {
   const s = sb();
   const id = params?.id;
 

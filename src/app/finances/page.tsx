@@ -3,15 +3,19 @@ import { formatCurrency } from "@/lib/format";
 import { supabase as supabaseMaybe } from "@/lib/supabase";
 import { MonthlyInOutChart, CompositionChart } from "./ClientCharts";
 import ClientFinesTable from "./ClientFinesTable";
+import { SupabaseClient } from "@supabase/supabase-js";
 
 // Works whether you export a Supabase client or a factory function
-function sb() {
-  const maybe: any = supabaseMaybe as any;
-  return typeof maybe === "function" ? maybe() : maybe;
+function sb(): SupabaseClient {
+  const maybe: unknown = supabaseMaybe;
+  if (typeof maybe === "function") {
+    return maybe();
+  }
+  return maybe as SupabaseClient;
 }
 
 /** Try multiple date fields gracefully (schema evolved during build) */
-function pickDate(row: Record<string, any>, fields: string[]): Date | null {
+function pickDate(row: Record<string, unknown>, fields: string[]): Date | null {
   for (const f of fields) {
     const val = row?.[f];
     if (!val) continue;
@@ -40,7 +44,7 @@ function lastNMonths(n = 12): string[] {
 }
 
 /** safe numeric */
-const toNum = (x: any) => (typeof x === "number" ? x : parseFloat(x ?? 0)) || 0;
+const toNum = (x: unknown) => (typeof x === "number" ? x : parseFloat(String(x ?? 0))) || 0;
 
 export default async function FinancePage() {
   const s = sb();
@@ -75,27 +79,27 @@ export default async function FinancePage() {
 
   // ------- Totals -------
   const finesPaid = fines
-    .filter((f: any) => (f.status ?? "").toLowerCase() === "paid")
-    .reduce((acc: number, f: any) => acc + toNum(f.amount), 0);
+    .filter((f: { status: unknown }) => (f.status ?? "").toString().toLowerCase() === "paid")
+    .reduce((acc: number, f: { amount: unknown }) => acc + toNum(f.amount), 0);
 
   const finesUnpaid = fines
-    .filter((f: any) => (f.status ?? "").toLowerCase() === "unpaid")
-    .reduce((acc: number, f: any) => acc + toNum(f.amount), 0);
+    .filter((f: { status: unknown }) => (f.status ?? "").toString().toLowerCase() === "unpaid")
+    .reduce((acc: number, f: { amount: unknown }) => acc + toNum(f.amount), 0);
 
-  const loansIssued = loans.reduce((acc: number, r: any) => {
-    const st = (r.status ?? "").toLowerCase();
+  const loansIssued = loans.reduce((acc: number, r: { status: unknown; amount: unknown }) => {
+    const st = (r.status ?? "").toString().toLowerCase();
     if (["issued", "active", "outstanding"].includes(st)) acc += toNum(r.amount);
     return acc;
   }, 0);
 
-  const loansRepaid = loans.reduce((acc: number, r: any) => {
-    const st = (r.status ?? "").toLowerCase();
+  const loansRepaid = loans.reduce((acc: number, r: { status: unknown; amount_repaid: unknown; amount: unknown }) => {
+    const st = (r.status ?? "").toString().toLowerCase();
     if (st === "repaid") acc += toNum(r.amount_repaid ?? r.amount);
     return acc;
   }, 0);
 
-  const loansOutstanding = loans.reduce((acc: number, r: any) => {
-    const st = (r.status ?? "").toLowerCase();
+  const loansOutstanding = loans.reduce((acc: number, r: { status: unknown; amount: unknown }) => {
+    const st = (r.status ?? "").toString().toLowerCase();
     if (["active", "outstanding"].includes(st)) acc += toNum(r.amount);
     return acc;
   }, 0);

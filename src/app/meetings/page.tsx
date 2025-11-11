@@ -65,8 +65,12 @@ export default function MeetingsPage() {
 
       if (error) throw error;
       setRows((data ?? []) as MeetingRow[]);
-    } catch (e: any) {
-      setErr(e?.message ?? 'Failed to load meetings');
+    } catch (e) {
+      let message = 'Failed to load meetings';
+      if (e instanceof Error) {
+        message = e.message;
+      }
+      setErr(message);
       setRows([]);
     } finally {
       setLoading(false);
@@ -94,8 +98,12 @@ export default function MeetingsPage() {
         setActive(data as MeetingRow); // open modal right away
         await load();
       }
-    } catch (e: any) {
-      setErr(e?.message ?? 'Failed to create meeting');
+    } catch (e) {
+      let message = 'Failed to create meeting';
+      if (e instanceof Error) {
+        message = e.message;
+      }
+      setErr(message);
     }
   };
 

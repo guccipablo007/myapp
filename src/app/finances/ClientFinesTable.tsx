@@ -3,11 +3,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase as supabaseMaybe } from "@/lib/supabase";
 import { formatCurrency } from "@/lib/format";
+import { SupabaseClient } from "@supabase/supabase-js";
 
 // Works whether you export a client or a factory function from lib/supabase
-function sbClient() {
-  const maybe: any = supabaseMaybe as any;
-  return typeof maybe === "function" ? maybe() : maybe;
+function sbClient(): SupabaseClient {
+  const maybe: unknown = supabaseMaybe;
+  if (typeof maybe === "function") {
+    return maybe();
+  }
+  return maybe as SupabaseClient;
 }
 
 type FineRow = {
@@ -50,8 +54,12 @@ export default function ClientFinesTable() {
         .limit(150);
       if (error) throw error;
       setRows((data ?? []) as FineRow[]);
-    } catch (e: any) {
-      setErr(e?.message || "Failed to load fines");
+    } catch (e) {
+      let message = "Failed to load fines";
+      if (e instanceof Error) {
+        message = e.message;
+      }
+      setErr(message);
     } finally {
       setLoading(false);
     }
